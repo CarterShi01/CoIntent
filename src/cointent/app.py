@@ -32,14 +32,20 @@ class StaticTokenVerifier:
 
 
 REST_ROUTES = (
-    Route("GET", "/api/health", "project-alignment/design-convergence/health"),
-    Route("GET", "/api/v1/projects", "project-alignment/design-convergence/list-projects"),
-    Route("GET", "/api/v1/overview", "project-alignment/design-convergence/get-overview"),
-    Route("GET", "/api/v1/model", "project-alignment/design-convergence/inspect-model"),
-    Route("GET", "/api/v1/intent-sources", "project-alignment/design-convergence/list-intent-sources"),
-    Route("GET", "/api/v1/proposals", "project-alignment/design-convergence/list-proposals"),
-    Route("GET", "/api/v1/snapshots", "project-alignment/implementation-mapping/list-snapshots"),
-    Route("GET", "/api/v1/findings", "project-alignment/alignment-review/list-findings"),
+    Route("GET", "/api/health", "cointent/project-management/health"),
+    Route("GET", "/api/v1/projects", "cointent/project-management/list-projects"),
+    Route("GET", "/api/v1/project", "cointent/project-management/inspect-project"),
+    Route("GET", "/api/v1/overview", "cointent/project-management/get-overview"),
+    Route("GET", "/api/v1/design-versions", "cointent/project-management/list-design-versions"),
+    Route("GET", "/api/v1/alignment-baseline", "cointent/project-management/inspect-alignment-baseline"),
+    Route("GET", "/api/v1/model", "cointent/product-design/inspect-design"),
+    Route("GET", "/api/v1/functions", "cointent/product-design/inspect-function-tree"),
+    Route("GET", "/api/v1/intent-sources", "cointent/product-design/list-intent-sources"),
+    Route("GET", "/api/v1/proposals", "cointent/product-design/list-design-proposals"),
+    Route("GET", "/api/v1/roles", "cointent/responsibility-design/inspect-role-forest"),
+    Route("GET", "/api/v1/snapshots", "cointent/implementation-alignment/list-code-snapshots"),
+    Route("GET", "/api/v1/findings", "cointent/implementation-alignment/list-alignment-findings"),
+    Route("GET", "/api/v1/change-sets", "cointent/change-lifecycle/list-change-sets"),
 )
 
 

@@ -1,5 +1,7 @@
 # CoIntent Design Proposal
 
+> Historical 0.1 baseline. The current design is [design-v0.2.md](design-v0.2.md).
+
 **Status:** Initial design baseline
 
 **Version:** 0.1

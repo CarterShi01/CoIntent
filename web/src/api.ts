@@ -1,4 +1,7 @@
-import type { Finding, ModelResponse, OverviewResponse, Proposal } from "./types";
+import type {
+  AlignmentBaseline, ChangeSet, DesignVersion, Finding, ModelResponse,
+  OverviewResponse, Project, Proposal,
+} from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -13,15 +16,27 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function loadWorkspace(projectId = "idea-factory") {
-  const query = new URLSearchParams({ project_id: projectId });
-  const [model, overview, findings, proposals] = await Promise.all([
-    call<ModelResponse>(`/api/v1/model?${query}`),
-    call<OverviewResponse>(`/api/v1/overview?${query}`),
-    call<{ findings: Finding[] }>(`/api/v1/findings?${query}`),
-    call<{ proposals: Proposal[] }>(`/api/v1/proposals?${query}`),
+export async function listProjects(): Promise<Project[]> {
+  return (await call<{ projects: Project[] }>("/api/v1/projects")).projects;
+}
+
+export async function loadWorkspace(projectId: string, designVersion?: number) {
+  const common = new URLSearchParams({ project_id: projectId });
+  const modelQuery = new URLSearchParams(common);
+  if (designVersion !== undefined) modelQuery.set("design_version", String(designVersion));
+  const [model, overview, versions, baseline, findings, proposals, changeSets] = await Promise.all([
+    call<ModelResponse>(`/api/v1/model?${modelQuery}`),
+    call<OverviewResponse>(`/api/v1/overview?${common}`),
+    call<{ versions: DesignVersion[] }>(`/api/v1/design-versions?${common}`),
+    call<AlignmentBaseline>(`/api/v1/alignment-baseline?${common}`),
+    call<{ findings: Finding[] }>(`/api/v1/findings?${common}`),
+    call<{ proposals: Proposal[] }>(`/api/v1/proposals?${common}`),
+    call<{ change_sets: ChangeSet[] }>(`/api/v1/change-sets?${common}`),
   ]);
-  return { model, overview, findings: findings.findings, proposals: proposals.proposals };
+  return {
+    model, overview, versions: versions.versions, baseline,
+    findings: findings.findings, proposals: proposals.proposals, changeSets: changeSets.change_sets,
+  };
 }
 
 export interface SessionState {

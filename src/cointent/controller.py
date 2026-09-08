@@ -1,4 +1,4 @@
-"""Contexture declaration: CoIntent's fixed agent capability graph."""
+"""Contexture declaration for CoIntent's agent-native application surface."""
 
 from __future__ import annotations
 
@@ -10,12 +10,14 @@ from contexture import Channels, Contexture, Role, Skill, Tool, current_principa
 
 from .models import ModelPatch, ProjectModel
 from .repository import CoIntentRepository
+from .scanner import RepositorySnapshot
 
 
 class CoIntentChannels(Channels):
     def __init__(self) -> None:
-        database = os.environ.get("COINTENT_DB_PATH", "runtime/cointent.db")
-        self.repository = CoIntentRepository(Path(database))
+        database = Path(os.environ.get("COINTENT_DB_PATH", "runtime/cointent.db"))
+        asset_root = Path(os.environ.get("COINTENT_DATA_ROOT", str(database.parent / "projects")))
+        self.repository = CoIntentRepository(database, asset_root)
 
 
 def _repository(node: Tool) -> CoIntentRepository:
@@ -29,50 +31,93 @@ def _actor(fallback: str = "local-agent") -> str:
     return principal.subject if principal is not None else fallback
 
 
+class Health(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="health", description="Report service and project-store health.", read_only=True)
+
+    async def invoke(self) -> dict[str, Any]:
+        repository = _repository(self)
+        return {"ok": True, "service": "cointent", "schema_version": "0.2", "projects": len(repository.list_projects())}
+
+
 class ListProjects(Tool):
     def __init__(self) -> None:
-        super().__init__(name="list-projects", description="List modeled projects and their current versions.", read_only=True)
+        super().__init__(name="list-projects", description="List projects and their current design versions.", read_only=True)
 
     async def invoke(self) -> dict[str, Any]:
         return {"projects": _repository(self).list_projects()}
 
 
-class Health(Tool):
+class InspectProject(Tool):
     def __init__(self) -> None:
-        super().__init__(name="health", description="Report whether the CoIntent model repository is available.", read_only=True)
+        super().__init__(name="inspect-project", description="Inspect project settings and current alignment summary.", read_only=True)
 
-    async def invoke(self) -> dict[str, Any]:
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
         repository = _repository(self)
-        return {"ok": True, "service": "cointent", "projects": len(repository.list_projects())}
-
-
-class CreateProject(Tool):
-    def __init__(self) -> None:
-        super().__init__(name="create-project", description="Create an empty, versioned CoIntent project.", read_only=False)
-
-    async def invoke(self, project_id: str, name: str, repository: str = "") -> dict[str, Any]:
-        return _repository(self).create_project(project_id, name, repository)
-
-
-class InspectModel(Tool):
-    def __init__(self) -> None:
-        super().__init__(name="inspect-model", description="Read the accepted goal, role, responsibility, and mapping model.", read_only=True)
-
-    async def invoke(self, project_id: str = "idea-factory", version: int | None = None) -> dict[str, Any]:
-        return _repository(self).get_model(project_id, version)
+        return {"project": repository.get_project(project_id), "overview": repository.overview(project_id)}
 
 
 class GetOverview(Tool):
     def __init__(self) -> None:
-        super().__init__(name="get-overview", description="Summarize model size, current scan, findings, and pending proposals.", read_only=True)
+        super().__init__(name="get-overview", description="Summarize the active design, code, and review state.", read_only=True)
 
     async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
         return _repository(self).overview(project_id)
 
 
+class CreateProject(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="create-project", description="Create an empty project and design version 1.", read_only=False)
+
+    async def invoke(
+        self, project_id: str, name: str, repository: str = "", description: str = "",
+        default_branch: str = "master", language: str = "en",
+    ) -> dict[str, Any]:
+        return _repository(self).create_project(project_id, name, repository, description, default_branch, language)
+
+
+class UpdateProjectSettings(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="update-project-settings", description="Update non-design project settings.", read_only=False)
+
+    async def invoke(
+        self, project_id: str, name: str | None = None, description: str | None = None,
+        repository: str | None = None, default_branch: str | None = None,
+        language: str | None = None, status: str | None = None,
+    ) -> dict[str, Any]:
+        return _repository(self).update_project(
+            project_id, name=name, description=description, repository=repository,
+            default_branch=default_branch, language=language, status=status,
+        )
+
+
+class ListDesignVersions(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="list-design-versions", description="List immutable accepted design versions.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
+        return {"versions": _repository(self).list_versions(project_id)}
+
+
+class InspectAlignmentBaseline(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="inspect-alignment-baseline", description="Inspect the current design, code snapshot, and mapping revision axes.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
+        return _repository(self).alignment_baseline(project_id)
+
+
+class InspectDesign(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="inspect-design", description="Read an accepted ProductFunction and RoleObject design version.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory", design_version: int | None = None) -> dict[str, Any]:
+        return _repository(self).get_model(project_id, design_version)
+
+
 class RecordIntent(Tool):
     def __init__(self) -> None:
-        super().__init__(name="record-intent", description="Preserve a human-agent exchange as evidence for later model changes.", read_only=False)
+        super().__init__(name="record-intent", description="Preserve a human-agent exchange in its original language.", read_only=False)
 
     async def invoke(self, project_id: str, speaker: str, content: str, source_ref: str = "") -> dict[str, Any]:
         return _repository(self).record_intent(project_id, speaker, content, source_ref)
@@ -80,195 +125,301 @@ class RecordIntent(Tool):
 
 class ListIntentSources(Tool):
     def __init__(self) -> None:
-        super().__init__(name="list-intent-sources", description="Read the source exchanges behind design decisions.", read_only=True)
+        super().__init__(name="list-intent-sources", description="Read original evidence behind design decisions.", read_only=True)
 
     async def invoke(self, project_id: str = "idea-factory", limit: int = 100) -> dict[str, Any]:
         return {"sources": _repository(self).list_intent_sources(project_id, limit)}
 
 
-class ProposeModelPatch(Tool):
+class InspectFunctionTree(Tool):
     def __init__(self) -> None:
-        super().__init__(name="propose-model-patch", description="Validate and stage a semantic model patch without changing the accepted baseline.", read_only=False)
+        super().__init__(name="inspect-function-tree", description="Read all or part of the ProductFunction hierarchy.", read_only=True)
 
     async def invoke(
-        self, project_id: str, base_version: int, patch: ModelPatch, rationale: str,
-        evidence_ids: list[str] | None = None,
+        self, project_id: str = "idea-factory", design_version: int | None = None,
+        root_function_id: str | None = None, depth: int = 20,
     ) -> dict[str, Any]:
-        return _repository(self).propose_patch(
-            project_id, base_version, patch.model_dump(), rationale=rationale,
+        return _repository(self).inspect_function_tree(project_id, design_version, root_function_id, depth)
+
+
+class InspectProductFunction(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="inspect-product-function", description="Inspect one ProductFunction and its RoleObject links.", read_only=True)
+
+    async def invoke(self, project_id: str, function_id: str, design_version: int | None = None) -> dict[str, Any]:
+        return _repository(self).inspect_product_function(project_id, function_id, design_version)
+
+
+class AssessFunctionCatalog(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="assess-function-catalog", description="Report ProductFunction ownership gaps without making design verdicts.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory", design_version: int | None = None) -> dict[str, Any]:
+        return _repository(self).function_coverage(project_id, design_version)
+
+
+class AnalyzeFunctionImpact(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="analyze-function-impact", description="Find RoleObjects and artifacts affected by ProductFunctions.", read_only=True)
+
+    async def invoke(self, project_id: str, function_ids: list[str], design_version: int | None = None) -> dict[str, Any]:
+        response = _repository(self).get_model(project_id, design_version)
+        model = ProjectModel.model_validate(response["model"])
+        links = [item for item in model.function_role_links if item.function_id in function_ids]
+        role_ids = sorted({item.role_id for item in links})
+        return {
+            "project_id": project_id, "design_version": response["version"], "function_ids": function_ids,
+            "role_ids": role_ids, "function_role_links": [item.model_dump() for item in links],
+            "artifact_paths": sorted({item.artifact_path for item in model.trace_links if item.role_id in role_ids}),
+        }
+
+
+class ProposeDesignPatch(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="propose-design-patch", description="Validate and stage a typed design patch without changing the accepted version.", read_only=False)
+
+    async def invoke(
+        self, project_id: str, base_design_version: int, patch: ModelPatch, rationale: str,
+        evidence_ids: list[str] | None = None, change_set_id: str | None = None,
+    ) -> dict[str, Any]:
+        repository = _repository(self)
+        proposal = repository.propose_patch(
+            project_id, base_design_version, patch.model_dump(), rationale=rationale,
             evidence_ids=evidence_ids or [], actor=_actor(),
         )
+        if change_set_id:
+            repository.update_change_set(change_set_id, proposal_id=proposal["id"])
+        return proposal
 
 
-class AssessModelQuality(Tool):
+class ListDesignProposals(Tool):
     def __init__(self) -> None:
-        super().__init__(
-            name="assess-model-quality",
-            description="Report structural review signals without treating heuristics as design verdicts.",
-            read_only=True,
-        )
-
-    async def invoke(self, project_id: str = "idea-factory", version: int | None = None) -> dict[str, Any]:
-        response = _repository(self).get_model(project_id, version)
-        model = ProjectModel.model_validate(response["model"])
-        owned_goals = {goal_id for item in model.responsibilities for goal_id in item.goal_ids}
-        roles_with_responsibility = {item.role_id for item in model.responsibilities}
-        related_roles = {
-            role_id
-            for relation in model.relations
-            for role_id in (relation.source_role_id, relation.target_role_id)
-        }
-        parent_roles = {role.parent_id for role in model.roles if role.parent_id is not None}
-        mapped_roles = {link.role_id for link in model.trace_links}
-        signals: list[dict[str, Any]] = []
-
-        def add(kind: str, element_type: str, element_id: str, message: str) -> None:
-            signals.append({
-                "kind": kind,
-                "element_type": element_type,
-                "element_id": element_id,
-                "message": message,
-            })
-
-        for goal in model.goals:
-            if goal.id not in owned_goals:
-                add("unowned_goal", "goal", goal.id, "目标尚未关联任何职责。")
-        for role in model.roles:
-            if role.id not in parent_roles and role.id not in roles_with_responsibility:
-                add("empty_leaf_role", "role", role.id, "叶子 Role 尚未承担职责。")
-            if role.parent_id is not None and role.id not in related_roles:
-                add("isolated_role", "role", role.id, "Role 尚未声明跨边界协作关系。")
-            if role.id not in mapped_roles:
-                add("unmapped_role", "role", role.id, "Role 尚无实现证据映射。")
-        for item in model.responsibilities:
-            if not item.goal_ids:
-                add("goal_free_responsibility", "responsibility", item.id, "职责尚未说明服务于哪个目标。")
-            if not item.inputs and not item.outputs and not item.constraints:
-                add("thin_contract", "responsibility", item.id, "职责尚未描述输入、输出或约束；请判断是否确有必要。")
-
-        return {
-            "project_id": project_id,
-            "version": response["version"],
-            "method": "CoIntent selective role-model review",
-            "verdict": "human_or_agent_judgment_required",
-            "signals": signals,
-            "counts": {
-                "signals": len(signals),
-                "goals": len(model.goals),
-                "roles": len(model.roles),
-                "responsibilities": len(model.responsibilities),
-            },
-        }
-
-
-class ListProposals(Tool):
-    def __init__(self) -> None:
-        super().__init__(name="list-proposals", description="List pending or resolved model proposals with semantic diffs.", read_only=True)
+        super().__init__(name="list-design-proposals", description="List pending or resolved design proposals and semantic diffs.", read_only=True)
 
     async def invoke(self, project_id: str = "idea-factory", status: str = "pending") -> dict[str, Any]:
         return {"proposals": _repository(self).list_proposals(project_id, status)}
 
 
-class ResolveProposal(Tool):
+class InspectDesignProposal(Tool):
     def __init__(self) -> None:
-        super().__init__(name="resolve-proposal", description="Accept or reject a reviewed proposal; acceptance creates a model version.", read_only=False)
+        super().__init__(name="inspect-design-proposal", description="Inspect a proposal, typed patch, and complete proposed model.", read_only=True)
+
+    async def invoke(self, proposal_id: str) -> dict[str, Any]:
+        return _repository(self).get_proposal(proposal_id)
+
+
+class ResolveDesignProposal(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="resolve-design-proposal", description="Accept or reject an explicitly reviewed proposal; acceptance creates a version.", read_only=False)
 
     async def invoke(self, proposal_id: str, decision: str, resolution: str = "") -> dict[str, Any]:
         if decision not in {"accept", "reject"}:
             raise ValueError("decision must be accept or reject")
-        return _repository(self).resolve_proposal(
-            proposal_id, accept=decision == "accept", actor=_actor("human"), resolution=resolution,
-        )
+        return _repository(self).resolve_proposal(proposal_id, accept=decision == "accept", actor=_actor("human"), resolution=resolution)
 
 
-class IngestSnapshot(Tool):
+class InspectRoleForest(Tool):
     def __init__(self) -> None:
-        super().__init__(name="ingest-snapshot", description="Store a read-only repository fact snapshot and derive incremental alignment findings.", read_only=False)
+        super().__init__(name="inspect-role-forest", description="Read the multi-root RoleObject decomposition forest and overlays.", read_only=True)
 
-    async def invoke(self, project_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
-        return _repository(self).ingest_snapshot(project_id, snapshot)
+    async def invoke(
+        self, project_id: str = "idea-factory", design_version: int | None = None,
+        root_role_id: str | None = None, depth: int = 20,
+    ) -> dict[str, Any]:
+        return _repository(self).inspect_role_forest(project_id, design_version, root_role_id, depth)
 
 
-class ListSnapshots(Tool):
+class InspectRoleObject(Tool):
     def __init__(self) -> None:
-        super().__init__(name="list-snapshots", description="List observed repository snapshots and their structural deltas.", read_only=True)
+        super().__init__(name="inspect-role-object", description="Inspect a RoleObject's full contract, functions, collaborators, and code evidence.", read_only=True)
+
+    async def invoke(self, project_id: str, role_id: str, design_version: int | None = None) -> dict[str, Any]:
+        return _repository(self).inspect_role_object(project_id, role_id, design_version)
+
+
+class AssessRoleQuality(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="assess-role-quality", description="Report structural cohesion, coupling, contract, coverage, and mapping signals.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory", design_version: int | None = None) -> dict[str, Any]:
+        response = _repository(self).get_model(project_id, design_version)
+        model = ProjectModel.model_validate(response["model"])
+        parents = {item.parent_id for item in model.role_objects if item.parent_id}
+        responsible = {item.role_id for item in model.responsibilities}
+        mapped = {item.role_id for item in model.trace_links}
+        related = {value for item in model.role_relations for value in (item.source_role_id, item.target_role_id)}
+        linked = {item.role_id for item in model.function_role_links}
+        signals: list[dict[str, str]] = []
+        for role in model.role_objects:
+            if role.id not in parents and role.id not in responsible:
+                signals.append({"kind": "empty_leaf_role", "element_id": role.id, "message": "Leaf RoleObject owns no responsibility."})
+            if role.id not in mapped:
+                signals.append({"kind": "unmapped_role", "element_id": role.id, "message": "RoleObject has no implementation evidence."})
+            if role.id not in linked:
+                signals.append({"kind": "function_free_role", "element_id": role.id, "message": "RoleObject is not linked to a ProductFunction."})
+            if role.parent_id is None and role.id not in related:
+                signals.append({"kind": "isolated_root", "element_id": role.id, "message": "Root RoleObject has no declared collaboration."})
+            if not role.inputs and not role.outputs and not role.constraints and role.id not in parents:
+                signals.append({"kind": "thin_contract", "element_id": role.id, "message": "Leaf RoleObject has no input, output, or constraint."})
+        return {"project_id": project_id, "design_version": response["version"], "verdict": "judgment_required", "signals": signals}
+
+
+class IngestCodeSnapshot(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="ingest-code-snapshot", description="Store a read-only repository fact snapshot and derive alignment findings.", read_only=False)
+
+    async def invoke(self, project_id: str, snapshot: RepositorySnapshot) -> dict[str, Any]:
+        return _repository(self).ingest_snapshot(project_id, snapshot.model_dump())
+
+
+class ListCodeSnapshots(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="list-code-snapshots", description="List observed repository snapshots and structural deltas.", read_only=True)
 
     async def invoke(self, project_id: str = "idea-factory", limit: int = 20) -> dict[str, Any]:
         return {"snapshots": _repository(self).list_snapshots(project_id, limit)}
 
 
-class ListFindings(Tool):
+class CompareCodeSnapshots(Tool):
     def __init__(self) -> None:
-        super().__init__(name="list-findings", description="List open or resolved implementation-alignment findings.", read_only=True)
+        super().__init__(name="compare-code-snapshots", description="Compare two observed code snapshots.", read_only=True)
+
+    async def invoke(self, project_id: str, from_snapshot_id: str, to_snapshot_id: str) -> dict[str, Any]:
+        return _repository(self).compare_snapshots(project_id, from_snapshot_id, to_snapshot_id)
+
+
+class FindArtifactRoleLinks(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="find-artifact-role-links", description="Trace implementation paths back to RoleObjects.", read_only=True)
+
+    async def invoke(self, project_id: str, artifact_path: str, design_version: int | None = None) -> dict[str, Any]:
+        response = _repository(self).get_model(project_id, design_version)
+        model = ProjectModel.model_validate(response["model"])
+        links = [item.model_dump() for item in model.trace_links if artifact_path == item.artifact_path or artifact_path.startswith(f"{item.artifact_path.rstrip('/')}/")]
+        return {"project_id": project_id, "design_version": response["version"], "artifact_path": artifact_path, "trace_links": links}
+
+
+class CompareDesignToCode(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="compare-design-to-code", description="Summarize intended coverage, observed mapping, and open findings.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
+        repository = _repository(self)
+        return {"baseline": repository.alignment_baseline(project_id), "coverage": repository.function_coverage(project_id), "findings": repository.list_findings(project_id)}
+
+
+class ListAlignmentFindings(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="list-alignment-findings", description="List open or resolved design-implementation findings.", read_only=True)
 
     async def invoke(self, project_id: str = "idea-factory", status: str = "open") -> dict[str, Any]:
         return {"findings": _repository(self).list_findings(project_id, status)}
 
 
-class ResolveFinding(Tool):
+class ResolveAlignmentFinding(Tool):
     def __init__(self) -> None:
-        super().__init__(name="resolve-finding", description="Record how an implementation-alignment finding was handled.", read_only=False)
+        super().__init__(name="resolve-alignment-finding", description="Record how an implementation alignment finding was handled.", read_only=False)
 
     async def invoke(self, finding_id: str, status: str, resolution: str) -> dict[str, Any]:
         return _repository(self).resolve_finding(finding_id, status, resolution)
 
 
-class CompareVersions(Tool):
+class StartChangeSet(Tool):
     def __init__(self) -> None:
-        super().__init__(name="compare-versions", description="Return a semantic diff between two accepted model versions.", read_only=True)
+        super().__init__(name="start-change-set", description="Start a traceable product-design-implementation change loop.", read_only=False)
+
+    async def invoke(self, project_id: str, title: str, description: str = "", function_ids: list[str] | None = None, role_ids: list[str] | None = None) -> dict[str, Any]:
+        return _repository(self).start_change_set(project_id, title, description, function_ids, role_ids)
+
+
+class ListChangeSets(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="list-change-sets", description="List product-design-implementation change loops.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory", status: str = "all") -> dict[str, Any]:
+        return {"change_sets": _repository(self).list_change_sets(project_id, status)}
+
+
+class InspectChangeSet(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="inspect-change-set", description="Inspect one change loop and its linked versions.", read_only=True)
+
+    async def invoke(self, change_set_id: str) -> dict[str, Any]:
+        return _repository(self).get_change_set(change_set_id)
+
+
+class UpdateChangeSet(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="update-change-set", description="Attach a design version or code snapshot and update lifecycle state.", read_only=False)
+
+    async def invoke(self, change_set_id: str, proposal_id: str | None = None, snapshot_id: str | None = None, target_design_version: int | None = None, status: str | None = None, resolution: str | None = None) -> dict[str, Any]:
+        return _repository(self).update_change_set(change_set_id, proposal_id=proposal_id, snapshot_id=snapshot_id, target_design_version=target_design_version, status=status, resolution=resolution)
+
+
+class GenerateImplementationBrief(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="generate-implementation-brief", description="Generate an agent implementation brief from an accepted change loop.", read_only=True)
+
+    async def invoke(self, change_set_id: str) -> dict[str, Any]:
+        return _repository(self).implementation_brief(change_set_id)
+
+
+class CompareDesignVersions(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="compare-design-versions", description="Return a semantic diff between accepted design versions.", read_only=True)
 
     async def invoke(self, project_id: str, from_version: int, to_version: int) -> dict[str, Any]:
         return _repository(self).compare_versions(project_id, from_version, to_version)
 
 
-class ConvergeDesign(Skill):
+class ExportDesignVersion(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="export-design-version", description="Export a portable versioned CoIntent 0.2 JSON bundle.", read_only=True)
+
+    async def invoke(self, project_id: str, design_version: int | None = None) -> dict[str, Any]:
+        return _repository(self).export_design(project_id, design_version)
+
+
+class RefineProductFunctions(Skill):
     def __init__(self) -> None:
         super().__init__(
-            name="converge-design",
-            description="Turn an incomplete idea into reviewable goals, responsibilities, and role boundaries.",
-            uses=(
-                "project-alignment/design-convergence/inspect-model",
-                "project-alignment/design-convergence/record-intent",
-                "project-alignment/design-convergence/assess-model-quality",
-                "project-alignment/design-convergence/propose-model-patch",
-            ),
+            name="refine-product-functions", description="Turn evolving product intent into a coherent ProductFunction catalog.",
+            uses=("cointent/product-design/record-intent", "cointent/product-design/inspect-function-tree", "cointent/product-design/assess-function-catalog", "cointent/product-design/analyze-function-impact", "cointent/product-design/propose-design-patch"),
             instructions=(
-                "Write human-facing model content and rationale in Chinese; keep stable IDs and implementation paths "
-                "in English. Preserve the user's relevant wording with record-intent and keep assumptions explicit. "
-                "Use a selective method, not a formal-method checklist: refine goals only until an outcome is "
-                "assignable and verifiable (KAOS-derived); define each Role by one coherent purpose, the behavior or "
-                "knowledge it is responsible for, and its collaborators (OOram/RDD-derived); add inputs, outputs, "
-                "and constraints only where they clarify a boundary (IDEF0-derived). A Role is not a class, service, "
-                "directory, person, or Agent, although any of those may realize it. Inspect the current model and its "
-                "quality signals, then ask only questions that could change goals, constraints, ownership, or role "
-                "boundaries. Propose a semantic patch against the exact current version; never rewrite the accepted "
-                "baseline directly. Explain uncertainty and ask the human to accept or reject the proposal."
+                "Preserve the human's original wording before modeling. Normalize accepted design content to English. "
+                "Describe what the product provides, not goals, teams, screens, or code units. Refine only while the "
+                "next level changes observable behavior, acceptance, constraint, or responsibility ownership. Identify "
+                "duplicates, missing acceptance conditions, and unowned leaf functions. Stage a typed, version-bound "
+                "proposal; never edit the accepted design directly."
             ),
         )
 
 
-class ReviewRoleModel(Skill):
+class DecomposeResponsibilities(Skill):
     def __init__(self) -> None:
         super().__init__(
-            name="review-role-model",
-            description="Review a Role Model for intent fidelity, coherent ownership, useful contracts, and implementation independence.",
-            uses=(
-                "project-alignment/design-convergence/inspect-model",
-                "project-alignment/design-convergence/list-intent-sources",
-                "project-alignment/design-convergence/assess-model-quality",
-                "project-alignment/design-convergence/propose-model-patch",
-            ),
+            name="decompose-responsibilities", description="Decompose ProductFunctions into a multi-root RoleObject forest.",
+            uses=("cointent/responsibility-design/inspect-role-forest", "cointent/responsibility-design/assess-role-quality", "cointent/product-design/analyze-function-impact", "cointent/product-design/propose-design-patch"),
             instructions=(
-                "Review in this order: (1) source fidelity—separate stated intent, accepted decisions, assumptions, "
-                "and code-derived hypotheses; (2) goal coverage—each leaf goal should be assignable and have a "
-                "credible way to verify it, without pretending formal KAOS completeness; (3) responsibility "
-                "ownership—look for orphan, conflicting, fragmented, or god-role ownership using RDD cohesion; "
-                "(4) collaboration—ensure boundary-crossing promises and dependencies are understandable in the "
-                "OOram role network; (5) contracts—add inputs, outputs, or constraints only when they reduce ambiguity; "
-                "(6) implementation independence—reject folder-tree, class-diagram, or deployment-topology mimicry; "
-                "and (7) evidence—state uncertainty and preserve provenance. Treat assess-model-quality output as "
-                "review prompts, never automatic failures. Return the review in Chinese. Stage fixes as a version-bound "
-                "proposal and leave acceptance to the human."
+                "Use RDD/OOram as the core and selectively apply GRASP high cohesion, low coupling, information expert, "
+                "controller, and protected variations. A RoleObject is a logical responsibility owner, not a class, "
+                "folder, service, person, or agent. Keep decomposition as a forest with at most one parent; represent "
+                "cross-cutting work through typed collaboration and FunctionRoleLink edges. Add knowledge, inputs, "
+                "outputs, and constraints only when they clarify an encapsulated boundary. Normalize design content to English."
+            ),
+        )
+
+
+class ReviewDesign(Skill):
+    def __init__(self) -> None:
+        super().__init__(
+            name="review-design", description="Review function coverage and RoleObject responsibility quality before acceptance.",
+            uses=("cointent/product-design/inspect-design", "cointent/product-design/list-intent-sources", "cointent/product-design/assess-function-catalog", "cointent/responsibility-design/assess-role-quality", "cointent/product-design/propose-design-patch"),
+            instructions=(
+                "Review source fidelity, ProductFunction clarity and acceptance, leaf ownership, RoleObject cohesion, "
+                "collaboration contracts, implementation independence, and evidence. Treat deterministic signals as "
+                "questions, not verdicts. Do not force KAOS, IDEF0, UML, DDD, or SOLID ceremony. Keep code-derived "
+                "hypotheses distinct from human-approved design and leave acceptance to an explicit human decision."
             ),
         )
 
@@ -276,95 +427,67 @@ class ReviewRoleModel(Skill):
 class MapImplementation(Skill):
     def __init__(self) -> None:
         super().__init__(
-            name="map-implementation",
-            description="Interpret repository facts as evidence for a responsibility model without copying the file tree.",
-            uses=(
-                "project-alignment/design-convergence/inspect-model",
-                "project-alignment/implementation-mapping/list-snapshots",
-                "project-alignment/design-convergence/propose-model-patch",
-            ),
+            name="map-implementation", description="Map observed code evidence to RoleObjects without copying the file tree.",
+            uses=("cointent/implementation-alignment/list-code-snapshots", "cointent/implementation-alignment/find-artifact-role-links", "cointent/implementation-alignment/compare-design-to-code", "cointent/product-design/propose-design-patch"),
             instructions=(
-                "Apply the Software Reflexion Model pattern selectively: the accepted Role Model is normative, the "
-                "repository snapshot is observed evidence, and TraceLinks are explicit mapping hypotheses. Start from "
-                "purpose and responsibility, then use artifacts as supporting evidence. Prefer stable module, package, "
-                "service, route, schema, and test boundaries; use many-to-many links at the coarsest useful level. "
-                "Classify evidence as convergent, absent, divergent, boundary-changing, unmapped, or uncertain. Never "
-                "equate a Role with a directory or class, and never infer desired intent from code alone. Write "
-                "human-facing model content and rationale in Chinese; retain code paths and stable IDs in English."
+                "Apply the Software Reflexion Model boundary: accepted design is normative, snapshots are observed, and "
+                "TraceLinks are explicit hypotheses. Prefer coarse stable artifacts and many-to-many mappings. Code may "
+                "support a proposal but cannot establish desired intent. Classify evidence as convergent, absent, "
+                "divergent, boundary-changing, unmapped, or uncertain."
             ),
         )
 
 
-class ReviewImplementationChange(Skill):
+class CloseAlignmentLoop(Skill):
     def __init__(self) -> None:
         super().__init__(
-            name="review-implementation-change",
-            description="Decide whether a repository delta preserves or changes intended responsibilities.",
-            uses=(
-                "project-alignment/alignment-review/list-findings",
-                "project-alignment/design-convergence/inspect-model",
-                "project-alignment/design-convergence/propose-model-patch",
-                "project-alignment/alignment-review/resolve-finding",
-            ),
+            name="close-alignment-loop", description="Carry a ProductFunction change through design, implementation, and review.",
+            uses=("cointent/change-lifecycle/inspect-change-set", "cointent/change-lifecycle/generate-implementation-brief", "cointent/implementation-alignment/compare-design-to-code", "cointent/change-lifecycle/update-change-set"),
             instructions=(
-                "Inspect each finding and its mapped roles. Classify the code change as internal implementation, "
-                "design evolution, implementation defect, accepted exception, or uncertain. Never let observed code "
-                "silently redefine intent. Propose a model patch only for a real design evolution, otherwise record "
-                "the implementation action or uncertainty in the finding resolution. Use Reflexion-style comparison "
-                "as evidence, not as authority, and write human-facing conclusions in Chinese."
+                "Do not close a ChangeSet until its accepted design version, implementation snapshot, affected functions "
+                "and roles, verification evidence, and alignment conclusion are explicit. A code-only change may be an "
+                "internal implementation, defect, exception, design evolution, or uncertainty; never silently rewrite design."
             ),
         )
 
 
-class DesignConvergence(Role):
+class ProjectManagement(Role):
+    def __init__(self) -> None:
+        super().__init__(name="project-management", description="Manage projects and the independent design/code version axes.", instructions="Select the project first. Treat DesignVersion, CodeSnapshot, and MappingRevision as independent coordinates.", tools=[Health(), ListProjects(), InspectProject(), GetOverview(), CreateProject(), UpdateProjectSettings(), ListDesignVersions(), InspectAlignmentBaseline()])
+
+
+class ProductDesign(Role):
+    def __init__(self) -> None:
+        super().__init__(name="product-design", description="Evolve the ProductFunction catalog through evidence and proposals.", instructions="Preserve original wording, work from accepted ProductFunctions, and stage changes as version-bound proposals.", skills=[RefineProductFunctions(), ReviewDesign()], tools=[InspectDesign(), RecordIntent(), ListIntentSources(), InspectFunctionTree(), InspectProductFunction(), AssessFunctionCatalog(), AnalyzeFunctionImpact(), ProposeDesignPatch(), ListDesignProposals(), InspectDesignProposal(), ResolveDesignProposal()])
+
+
+class ResponsibilityDesign(Role):
+    def __init__(self) -> None:
+        super().__init__(name="responsibility-design", description="Design and inspect the multi-root RoleObject responsibility forest.", instructions="Model cohesive responsibility owners independently of code layout, then make contracts and collaborations explicit where useful.", skills=[DecomposeResponsibilities()], tools=[InspectRoleForest(), InspectRoleObject(), AssessRoleQuality()])
+
+
+class ImplementationAlignment(Role):
+    def __init__(self) -> None:
+        super().__init__(name="implementation-alignment", description="Compare observed code with accepted responsibility design.", instructions="Keep repository facts, semantic mappings, and accepted design separate. Findings require review before action.", skills=[MapImplementation()], tools=[IngestCodeSnapshot(), ListCodeSnapshots(), CompareCodeSnapshots(), FindArtifactRoleLinks(), CompareDesignToCode(), ListAlignmentFindings(), ResolveAlignmentFinding()])
+
+
+class ChangeLifecycle(Role):
+    def __init__(self) -> None:
+        super().__init__(name="change-lifecycle", description="Track product changes through design, implementation, and alignment closure.", instructions="Bind each significant change to affected functions, roles, accepted design, implementation evidence, and a review conclusion.", skills=[CloseAlignmentLoop()], tools=[StartChangeSet(), ListChangeSets(), InspectChangeSet(), UpdateChangeSet(), GenerateImplementationBrief()])
+
+
+class HistoryAndPortability(Role):
+    def __init__(self) -> None:
+        super().__init__(name="history-and-portability", description="Compare and export immutable design assets.", instructions="Use immutable versions and portable JSON to explain how accepted design changed over time.", tools=[CompareDesignVersions(), ExportDesignVersion()])
+
+
+class CoIntent(Role):
     def __init__(self) -> None:
         super().__init__(
-            name="design-convergence", description="Clarify intent and evolve the accepted responsibility model.",
-            instructions="Use the design skill for judgment and Tools for evidence, proposals, and explicit decisions.",
-            skills=[ConvergeDesign(), ReviewRoleModel()],
-            tools=[Health(), ListProjects(), CreateProject(), InspectModel(), GetOverview(), RecordIntent(),
-                   ListIntentSources(), AssessModelQuality(), ProposeModelPatch(), ListProposals(), ResolveProposal()],
+            name="cointent", description="Align evolving ProductFunctions, RoleObject responsibilities, and implementation evidence.",
+            instructions="Use project-management for scope, product-design for product promises, responsibility-design for ownership, implementation-alignment for code evidence, change-lifecycle for closure, and history-and-portability for versions and JSON.",
+            children=[ProjectManagement(), ProductDesign(), ResponsibilityDesign(), ImplementationAlignment(), ChangeLifecycle(), HistoryAndPortability()],
         )
 
 
-class ImplementationMapping(Role):
-    def __init__(self) -> None:
-        super().__init__(
-            name="implementation-mapping", description="Connect observed repository facts to logical roles.",
-            instructions="Ingest scanner output, inspect deltas, and map at the coarsest useful architectural level.",
-            skills=[MapImplementation()], tools=[IngestSnapshot(), ListSnapshots()],
-        )
-
-
-class AlignmentReview(Role):
-    def __init__(self) -> None:
-        super().__init__(
-            name="alignment-review", description="Review semantic drift between implementation and intended design.",
-            instructions="Findings are evidence for review, not automatic verdicts. Resolve each with rationale.",
-            skills=[ReviewImplementationChange()], tools=[ListFindings(), ResolveFinding()],
-        )
-
-
-class History(Role):
-    def __init__(self) -> None:
-        super().__init__(
-            name="history", description="Explain how accepted design versions differ.",
-            instructions="Compare immutable versions and connect changes to their recorded rationale.",
-            tools=[CompareVersions()],
-        )
-
-
-class ProjectAlignment(Role):
-    def __init__(self) -> None:
-        super().__init__(
-            name="project-alignment",
-            description="Converge software intent and keep implementation aligned with accepted responsibility boundaries.",
-            instructions=(
-                "Choose design-convergence for intent and role changes, implementation-mapping for repository facts, "
-                "alignment-review for drift, and history for accepted version differences."
-            ),
-            children=[DesignConvergence(), ImplementationMapping(), AlignmentReview(), History()],
-        )
-
-
-app = Contexture(name="cointent", roots=(ProjectAlignment,), channels=CoIntentChannels)
+app = Contexture(name="cointent", roots=(CoIntent,), channels=CoIntentChannels)

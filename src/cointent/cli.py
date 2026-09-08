@@ -75,7 +75,7 @@ def _scan(args: argparse.Namespace) -> None:
     repository.ensure_project(args.project_id, args.name or args.project_id.replace("-", " ").title(), snapshot.repository)
     result = repository.ingest_snapshot(args.project_id, snapshot.model_dump())
     current = repository.get_model(args.project_id)
-    if args.seed_idea_factory and not current["model"]["roles"]:
+    if args.seed_idea_factory and not current["model"]["role_objects"]:
         repository.replace_model(
             args.project_id, idea_factory_model(snapshot), actor="agent:initial-scan",
             message="Create the first responsibility model from repository evidence.",
@@ -104,6 +104,6 @@ def _import_fixture(args: argparse.Namespace) -> None:
     repository.ensure_project(model.project_id, model.name, snapshot.repository)
     repository.ingest_snapshot(model.project_id, snapshot.model_dump())
     current = repository.get_model(model.project_id)
-    if not current["model"]["roles"]:
+    if not current["model"]["role_objects"]:
         repository.replace_model(model.project_id, model, actor="agent:fixture", message="Import experiment baseline")
     print(json.dumps(repository.overview(model.project_id), indent=2))

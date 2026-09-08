@@ -13,8 +13,8 @@ implementation evidence with that accepted model.
 
 | Need in CoIntent | Concept borrowed | What CoIntent keeps | What CoIntent leaves out |
 | --- | --- | --- | --- |
-| Idea to goals | KAOS / goal-oriented requirements engineering | progressive goal refinement, responsibility assignment, obstacles as questions, and an assignable/verifiable stopping condition | temporal logic, proof obligations, and claims of formal completeness |
-| Goals to Role Model | OOram role modeling | systems as networks of collaborating roles; roles are positions in a collaboration and are independent of classes | the complete OOram process and notation set |
+| Idea to ProductFunctions | KAOS / goal-oriented requirements engineering | progressive clarification, responsibility assignment, obstacles as questions, and an assignable/verifiable stopping condition | temporal logic, proof obligations, a separate Goal tree, and claims of formal completeness |
+| ProductFunctions to RoleObjects | OOram role modeling | systems as networks of collaborating roles; roles are positions in a collaboration and are independent of classes | the complete OOram process and notation set |
 | Role boundary quality | Responsibility-Driven Design | purpose, cohesive responsibilities, knowledge/behavior ownership, and explicit collaborators | class-card ceremonies and a requirement to implement with objects |
 | Boundary contracts | IDEF0 | meaningful inputs, outputs, and constraints; hierarchical decomposition when useful | full ICOM diagram syntax and treating every Role as a function box |
 | Code to Role Model | Software Reflexion Models | a normative high-level model, an observed source model, explicit mappings, and convergence/divergence/absence findings | automatic promotion of observed code structure into intended design |
@@ -30,8 +30,8 @@ the authority established by earlier checks.
 1. **Source fidelity.** Separate words supplied by the human, accepted
    decisions, assumptions, and code-derived hypotheses. Preserve exact intent
    evidence before proposing a change.
-2. **Goal coverage.** Refine a goal only while the next level changes ownership,
-   constraints, or verification. A leaf goal should be assignable and have a
+2. **ProductFunction coverage.** Refine a function only while the next level changes ownership,
+   observable behavior, constraints, or verification. A leaf function should be assignable and have a
    credible way to recognize success.
 3. **Responsibility ownership.** Every required outcome needs a clear owner.
    Challenge orphan responsibilities, conflicting owners, fragmented ownership,
@@ -100,10 +100,10 @@ a new intended-model version.
 
 ## Language and identifier policy
 
-Human-facing model content is Chinese for the current product deployment. Stable
-IDs, repository paths, protocol enum values, and source-code identifiers remain
-English. This keeps the review surface natural for its user without coupling
-machine identity to translated labels.
+The web interface and canonical accepted model content are English. Stable IDs,
+repository paths, protocol enum values, and source-code identifiers are also
+English. `IntentSource` preserves the original human or Agent wording in any
+language so translation never replaces provenance.
 
 ## Primary references
 

@@ -2,9 +2,9 @@
 
 **Turn ideas into living role models, and keep implementation aligned with intent.**
 
-CoIntent is a software design convergence and implementation alignment system for humans and agents. Through continuous dialogue, it progressively turns a fuzzy idea into a versioned graph of goals, responsibilities, and roles, then uses semantic mappings to detect drift between that model and the code that implements it.
+CoIntent is a software design convergence and implementation alignment system for humans and Agents. Through continuous dialogue, it progressively turns a fuzzy idea into a versioned ProductFunction catalog and RoleObject responsibility graph, then uses semantic mappings to detect drift between that accepted design and observed code.
 
-> The repository now contains a working vertical MVP: a Contexture-powered MCP server, a versioned SQLite model store, a read-only incremental Git scanner, explicit read REST routes, and a synchronized Role Book / Role Topology web interface.
+> The repository contains a working 0.2 MVP: a Contexture-powered MCP application, SQLite plus portable JSON assets, project and dual version axes, a read-only incremental Git scanner, a ChangeSet lifecycle, explicit read REST routes, and an English ProductFunction / RoleObject review workspace.
 
 ## Why CoIntent?
 
@@ -13,15 +13,15 @@ Agentic software development exposes two persistent alignment gaps:
 1. **Idea to design:** a person can describe what they want, but that description is rarely precise enough to become a coherent software system without repeated clarification and decomposition.
 2. **Implementation to understanding:** an agent can rapidly change a codebase, but a person needs a stable, high-level view of what the system does, who owns each responsibility, and whether the implementation still matches the agreed design.
 
-Most architecture tools start from code and visualize files, classes, functions, or dependencies. CoIntent starts from intent. Code is mapped back to the design so that implementation changes can be interpreted at the level of goals, responsibilities, and role boundaries.
+Most architecture tools start from code and visualize files, classes, functions, or dependencies. CoIntent starts from intent. Code is mapped back to the design so that implementation changes can be interpreted at the level of product functions, responsibilities, and RoleObject boundaries.
 
 ## Core loop
 
 ```mermaid
 flowchart LR
     I[Idea] --> D[Dialogue and design convergence]
-    D --> G[Goals and constraints]
-    G --> R[Role model]
+    D --> F[ProductFunction catalog]
+    F --> R[RoleObject responsibility model]
     R --> M[Implementation mapping]
     M --> C[Code]
     C --> A[Alignment review]
@@ -64,10 +64,10 @@ A dedicated chat interface is not required: a person may work through their exis
 
 Contexture's runtime `Role` is an agent capability and containment boundary. A CoIntent model `Role` is a domain record describing responsibility in the software being designed. They share responsibility-oriented thinking but must not be treated as the same entity.
 
-The planned visual experience has two primary projections:
+The visual experience has two synchronized projections:
 
-1. **Role Book** — a readable, structured description of goals, roles, responsibilities, contracts, decisions, and open questions.
-2. **System Graph** — an interactive topology of role hierarchy, collaboration, dependencies, and implementation mappings.
+1. **Function Catalog** — a product-manager-friendly tree of what the product provides.
+2. **RoleObject Map and Inspector** — a multi-root responsibility topology plus purpose, responsibility, knowledge, input/output, constraint, collaboration, ProductFunction, implementation, and review details.
 
 Version history and design diffs make every accepted change traceable to its rationale and source evidence.
 
@@ -110,7 +110,7 @@ uv run cointent scan /path/to/idea-factory \
 # Terminal 1: Contexture MCP + read-only REST API
 uv run cointent serve
 
-# Terminal 2: Role Book + Role Topology
+# Terminal 2: ProductFunction + RoleObject workspace
 npm --prefix web run dev
 ```
 
@@ -120,12 +120,13 @@ The scanner reads tracked Git files and metadata; it does not modify the target 
 
 ## Agent interface
 
-MCP is the only model-mutation interface. Its capability graph exposes four workflow Skills and their typed Tools:
+MCP is the only model-mutation interface. Its capability graph exposes five workflow Skills and their typed Tools:
 
-- `converge-design` preserves relevant human wording, inspects the accepted model, and stages a semantic proposal;
-- `review-role-model` applies the selective goal, role, responsibility, contract, and evidence review method;
+- `refine-product-functions` preserves relevant human wording and stages functional design changes;
+- `decompose-responsibilities` turns functions into cohesive, implementation-independent RoleObjects;
+- `review-design` applies selective KAOS, OOram/RDD/GRASP, IDEF0, and evidence lenses;
 - `map-implementation` interprets repository facts as many-to-many evidence without copying the file tree into the Role Model;
-- `review-implementation-change` classifies a detected delta before resolving it or proposing a design evolution.
+- `close-alignment-loop` binds a change to accepted design, implementation evidence, and a review conclusion.
 
 Accepted intent and observed code are stored separately. A proposal names the exact model version it was based on; acceptance creates a new immutable version, and stale proposals cannot silently overwrite newer intent.
 
@@ -140,7 +141,7 @@ npm --prefix web run build
 
 ## Documentation
 
-The conceptual product boundaries are in [docs/design.md](docs/design.md), the selective operating method is in [docs/method.md](docs/method.md), and the implemented architecture, data lifecycle, interfaces, experiment result, and deployment procedure are in [docs/mvp.md](docs/mvp.md). Use [docs/review.md](docs/review.md) for the live agent-to-human review walkthrough.
+The current detailed design is [docs/design-v0.2.md](docs/design-v0.2.md), and the executable delivery/runbook is [docs/implementation-v0.2.md](docs/implementation-v0.2.md). [docs/method.md](docs/method.md) explains the selective method composition, and [docs/review.md](docs/review.md) gives the live human/Agent review path. The 0.1 [design](docs/design.md) and [MVP report](docs/mvp.md) remain as historical baselines until their useful background is fully folded forward.
 
 ## Framework dependency
 
@@ -148,6 +149,6 @@ The project metadata pins Contexture `0.14.0` to the exact latest upstream commi
 
 ## Project status
 
-CoIntent is at **MVP 0.1**. It proves the full storage and interaction skeleton with Idea Factory as a read-only experiment. Semantic role inference is deliberately human/agent-reviewed; the deterministic scanner produces implementation facts, not design truth.
+CoIntent is at **MVP 0.2**. It proves project/version management, ProductFunction-to-RoleObject design, bidirectional implementation alignment, and Agent-native change lifecycle with Idea Factory as a read-only experiment. Semantic design remains deliberately human/Agent-reviewed; the deterministic scanner produces implementation facts, not design truth.
 
 Contributions, critiques, and relevant prior art are welcome.

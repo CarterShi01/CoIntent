@@ -97,7 +97,7 @@ unauth_api="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8811/api
 curl -fsS -c "$cookie_jar" -H 'Content-Type: application/json' \
   --data "$login_payload" http://127.0.0.1:8811/api/login >/dev/null
 overview="$(curl -fsS -b "$cookie_jar" 'http://127.0.0.1:8811/api/v1/overview?project_id=idea-factory')"
-printf '%s' "$overview" | grep -q '"roles":8' || die "Idea Factory baseline is not available"
+printf '%s' "$overview" | grep -Eq '"role_objects":[1-9][0-9]*' || die "Idea Factory RoleObject baseline is not available"
 printf 'browser session login -> 200; unauthenticated API -> 401\n'
 mcp_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8811/mcp)"
 [ "$mcp_code" = "401" ] || die "unauthenticated MCP returned $mcp_code, expected 401"

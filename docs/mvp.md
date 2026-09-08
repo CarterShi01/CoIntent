@@ -1,5 +1,7 @@
 # CoIntent MVP 0.1
 
+> Historical implementation report. The current implementation plan and runbook is [implementation-v0.2.md](implementation-v0.2.md).
+
 **Status:** implemented vertical slice
 
 **Experiment:** local `idea-factory` checkout, read only

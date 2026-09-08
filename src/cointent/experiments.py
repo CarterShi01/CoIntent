@@ -1,127 +1,163 @@
-"""Curated experiment baselines built from scanner evidence."""
+"""Curated English design baseline for the Idea Factory experiment."""
 
 from __future__ import annotations
 
-from .models import Goal, ProjectModel, Relation, Responsibility, RoleRecord, TraceLink
+from .models import (
+    FunctionRoleLink,
+    ProductFunction,
+    ProjectModel,
+    Responsibility,
+    RoleObject,
+    RoleRelation,
+    TraceLink,
+)
 from .scanner import RepositorySnapshot
 
 
 def idea_factory_model(snapshot: RepositorySnapshot) -> ProjectModel:
-    """Return the first agent-produced responsibility model for Idea Factory.
-
-    The model is intentionally curated rather than claimed as deterministic truth.
-    Its trace links are grounded in the supplied scan and remain reviewable.
-    """
-
+    """Build a reviewable function catalog and responsibility forest from evidence."""
     evidence = [f"scan:{snapshot.id}"]
-    goals = [
-        Goal(id="goal.screen-ideas", title="产出经过筛选的创业想法",
-             description="把多类信号转化为每日候选创业想法，并给出判断与低成本的下一步验证。",
-             source_ids=evidence),
-        Goal(id="goal.cost-gradient", title="沿漏斗逐步投入判断成本",
-             description="前段使用低成本的确定性筛选，只对存活候选投入昂贵的语义判断。",
-             parent_id="goal.screen-ideas", source_ids=evidence),
-        Goal(id="goal.explainability", title="让每个决策都可解释",
-             description="保留证据、评分、结论与反馈，使结果能够被审查并持续改进。",
-             parent_id="goal.screen-ideas", source_ids=evidence),
+    functions = [
+        _function("function.idea-screening", "Idea discovery and screening", "Turn source signals into screened startup ideas and bounded experiments.", None, evidence, priority="critical"),
+        _function("function.signal-intelligence", "Signal intelligence", "Acquire and qualify market, persona, and problem signals.", "function.idea-screening", evidence),
+        _function("function.signal-intake", "Collect source signals", "Collect multiple signal classes through replaceable source adapters.", "function.signal-intelligence", evidence),
+        _function("function.signal-qualification", "Qualify source signals", "Normalize, deduplicate, triage, and corroborate raw signals.", "function.signal-intelligence", evidence),
+        _function("function.candidate-development", "Candidate development", "Generate diverse candidates and make them comparable.", "function.idea-screening", evidence),
+        _function("function.candidate-generation", "Generate idea candidates", "Create multiple startup candidates from qualified signals.", "function.candidate-development", evidence),
+        _function("function.candidate-ranking", "Rank idea candidates", "Rank candidates with comparable, time-sensitive factors.", "function.candidate-development", evidence),
+        _function("function.candidate-evaluation", "Candidate evaluation", "Reject weak candidates and select defensible survivors.", "function.idea-screening", evidence),
+        _function("function.deterministic-gating", "Apply deterministic gates", "Reject candidates that fail cheap, explicit criteria.", "function.candidate-evaluation", evidence),
+        _function("function.evidence-review", "Review supporting evidence", "Assess whether a candidate has sufficient grounded evidence.", "function.candidate-evaluation", evidence),
+        _function("function.persona-pressure", "Run persona-pressure evaluation", "Test candidates against founder constraints and representative personas.", "function.candidate-evaluation", evidence),
+        _function("function.portfolio-selection", "Select a candidate portfolio", "Choose a balanced portfolio from surviving candidates.", "function.candidate-evaluation", evidence),
+        _function("function.next-experiment", "Define the next experiment", "Attach the riskiest assumption and a cheap bounded test.", "function.candidate-evaluation", evidence),
+        _function("function.learning", "Outcome learning", "Use real outcomes to improve later scoring and judgment.", "function.idea-screening", evidence),
+        _function("function.outcome-capture", "Capture decisions and outcomes", "Preserve verdicts, feedback, outcomes, and evidence.", "function.learning", evidence),
+        _function("function.calibration", "Calibrate evaluation", "Suggest factor and threshold changes from prediction error.", "function.learning", evidence),
+        _function("function.operations", "Operation and integration", "Operate the pipeline and integrate selected external workflows.", "function.idea-screening", evidence),
+        _function("function.operator-control", "Operate the pipeline", "Inspect pipeline state, run workflows, and record human decisions.", "function.operations", evidence),
+        _function("function.workflow-mirroring", "Mirror external workflows", "Keep selected Dify workflows aligned with the core pipeline contract.", "function.operations", evidence),
     ]
     roles = [
-        RoleRecord(id="role.idea-factory", name="想法工厂", parent_id=None,
-                   purpose="负责把信号端到端地转化为经过筛选、可以验证的创业想法。", source_ids=evidence),
-        RoleRecord(id="role.signal-intelligence", name="信号情报", parent_id="role.idea-factory",
-                   purpose="获取、标准化、交叉验证并压缩嘈杂的来源信号。", source_ids=evidence),
-        RoleRecord(id="role.candidate-generation", name="候选生成", parent_id="role.idea-factory",
-                   purpose="生成多样化的想法候选，并使用具有时效性的因子进行排序。", source_ids=evidence),
-        RoleRecord(id="role.evaluation-gate", name="评估关卡", parent_id="role.idea-factory",
-                   purpose="高效淘汰薄弱候选，产出有依据的结论和下一步验证。", source_ids=evidence),
-        RoleRecord(id="role.learning-loop", name="学习闭环", parent_id="role.idea-factory",
-                   purpose="记录结果与反馈，用于校准后续评分和决策。", source_ids=evidence),
-        RoleRecord(id="role.domain-contract", name="共享领域契约", parent_id="role.idea-factory",
-                   purpose="维持系统中模型、因子、LLM 边界、状态和证据语义的一致性。", source_ids=evidence),
-        RoleRecord(id="role.operator-surface", name="操作界面", parent_id="role.idea-factory",
-                   purpose="让创始人查看漏斗、运行流程，并记录决策与结果。", source_ids=evidence),
-        RoleRecord(id="role.workflow-mirror", name="工作流镜像", parent_id="role.idea-factory",
-                   purpose="把选定的流水线行为镜像到外部运行的 Dify 工作流，同时保持核心契约不变。", source_ids=evidence),
+        _role("role.signal-intelligence", "Signal Intelligence", "Own the conversion of noisy sources into qualified signals.", None, evidence, inputs=["Source signals"], outputs=["Qualified signals"], knowledge=["Source provenance", "Signal quality"]),
+        _role("role.signal-acquisition", "Signal Acquisition", "Collect signals through isolated and replaceable adapters.", "role.signal-intelligence", evidence, outputs=["Source records"]),
+        _role("role.signal-qualification", "Signal Qualification", "Normalize, reduce, and corroborate collected signals.", "role.signal-intelligence", evidence, inputs=["Source records"], outputs=["Qualified signals"]),
+        _role("role.candidate-generation", "Candidate Generation", "Own the creation and comparable ranking of idea candidates.", None, evidence, inputs=["Qualified signals"], outputs=["Ranked candidates"]),
+        _role("role.idea-synthesis", "Idea Synthesis", "Generate diverse candidate ideas from qualified evidence.", "role.candidate-generation", evidence, inputs=["Qualified signals"], outputs=["Idea candidates"]),
+        _role("role.candidate-ranking", "Candidate Ranking", "Score and order candidates with time-sensitive factors.", "role.candidate-generation", evidence, inputs=["Idea candidates"], outputs=["Ranked candidates"], knowledge=["Factor scores"]),
+        _role("role.evaluation-gate", "Evaluation Gate", "Own efficient rejection and defensible selection decisions.", None, evidence, inputs=["Ranked candidates"], outputs=["Verdicts", "Decision memos", "Next experiments"], knowledge=["Evaluation verdicts", "Rejection reasons"]),
+        _role("role.hard-gate", "Hard Gate", "Apply cheap deterministic rejection criteria before semantic judgment.", "role.evaluation-gate", evidence, inputs=["Ranked candidates"], outputs=["Gate survivors"], constraints=["Run before semantic evaluation"]),
+        _role("role.semantic-evaluation", "Semantic Evaluation", "Review evidence and pressure-test survivors against founder and persona fit.", "role.evaluation-gate", evidence, inputs=["Gate survivors", "Founder constraints", "Representative personas"], outputs=["Fit-pressure evidence"], constraints=["Every judgment must cite evidence"]),
+        _role("role.portfolio-selection", "Portfolio Selection", "Select survivors and attach bounded next experiments.", "role.evaluation-gate", evidence, inputs=["Evaluated survivors"], outputs=["Selected portfolio", "Next experiments"]),
+        _role("role.learning-loop", "Learning Loop", "Own outcome capture and evaluation calibration.", None, evidence, inputs=["Verdicts", "Observed outcomes"], outputs=["Calibration evidence"]),
+        _role("role.outcome-ledger", "Outcome Ledger", "Preserve decisions, feedback, and observed outcomes.", "role.learning-loop", evidence, inputs=["Human decisions", "Outcomes"], outputs=["Auditable outcome history"], knowledge=["Decision history", "Outcome history"]),
+        _role("role.calibration", "Calibration", "Derive lessons and suggest scoring changes from prediction error.", "role.learning-loop", evidence, inputs=["Auditable outcome history"], outputs=["Calibration proposals"]),
+        _role("role.domain-contract", "Shared Domain Contract", "Keep candidate, evidence, factor, persona, state, and LLM semantics consistent.", None, evidence, outputs=["Stable shared semantics"], knowledge=["Domain vocabulary", "Model contracts"]),
+        _role("role.operator-surface", "Operator Surface", "Provide authenticated human inspection and control of the pipeline.", None, evidence, inputs=["Pipeline state"], outputs=["Human decisions"]),
+        _role("role.workflow-mirror", "Workflow Mirror", "Mirror selected behavior into externally operated Dify workflows.", None, evidence, inputs=["Core workflow contracts"], outputs=["Validated external workflows"], constraints=["Do not redefine the core contract"]),
     ]
     responsibilities = [
-        Responsibility(id="resp.signal-acquisition", role_id="role.signal-intelligence",
-                       statement="通过隔离且可替换的来源适配器，采集三类信号。",
-                       goal_ids=["goal.screen-ideas"], outputs=["标准化来源记录"], source_ids=evidence),
-        Responsibility(id="resp.signal-reduction", role_id="role.signal-intelligence",
-                       statement="在生成候选前，对信号进行标准化、去重、初筛和交叉验证。",
-                       goal_ids=["goal.cost-gradient"], inputs=["原始信号"], outputs=["合格信号"], source_ids=evidence),
-        Responsibility(id="resp.generate", role_id="role.candidate-generation",
-                       statement="生成多个候选，并计算可比较且随时间衰减的因子分数。",
-                       goal_ids=["goal.screen-ideas", "goal.cost-gradient"], inputs=["合格信号"], outputs=["已排序候选"], source_ids=evidence),
-        Responsibility(id="resp.evaluate", role_id="role.evaluation-gate",
-                       statement="执行硬性门槛、证据检查、对抗性判断与组合筛选。",
-                       goal_ids=["goal.screen-ideas", "goal.cost-gradient"], inputs=["已排序候选"], outputs=["结论与决策备忘"], source_ids=evidence),
-        Responsibility(id="resp.next-test", role_id="role.evaluation-gate",
-                       statement="为存活想法附上风险最高的假设和一个低成本、有边界的实验。",
-                       goal_ids=["goal.screen-ideas"], outputs=["可验证的下一步行动"], source_ids=evidence),
-        Responsibility(id="resp.learn", role_id="role.learning-loop",
-                       statement="记录结果、提炼经验，并根据观察到的预测误差建议校准调整。",
-                       goal_ids=["goal.explainability"], inputs=["结论与结果"], outputs=["校准证据"], source_ids=evidence),
-        Responsibility(id="resp.contract", role_id="role.domain-contract",
-                       statement="定义各 Role 共用的候选、证据、因子、账本、状态与 LLM 契约。",
-                       goal_ids=["goal.explainability"], outputs=["稳定的共享语义"], source_ids=evidence),
-        Responsibility(id="resp.operate", role_id="role.operator-surface",
-                       statement="展示流水线状态，并为运行、反馈和结果提供经过认证的人类控制。",
-                       goal_ids=["goal.explainability"], inputs=["模型与流水线输出"], outputs=["人类决策"], source_ids=evidence),
-        Responsibility(id="resp.mirror", role_id="role.workflow-mirror",
-                       statement="维护经过明确验证的生成与评估工作流镜像。",
-                       goal_ids=["goal.explainability"], source_ids=evidence),
+        _responsibility("resp.signal-acquisition", "role.signal-acquisition", "Collect supported signal classes through replaceable adapters.", ["function.signal-intake"], evidence),
+        _responsibility("resp.signal-qualification", "role.signal-qualification", "Normalize, deduplicate, triage, and corroborate source records.", ["function.signal-qualification"], evidence),
+        _responsibility("resp.idea-synthesis", "role.idea-synthesis", "Generate multiple candidates from qualified signals.", ["function.candidate-generation"], evidence),
+        _responsibility("resp.candidate-ranking", "role.candidate-ranking", "Compute comparable, time-decayed factor scores and rank candidates.", ["function.candidate-ranking"], evidence),
+        _responsibility("resp.hard-gate", "role.hard-gate", "Apply explicit deterministic rejection criteria.", ["function.deterministic-gating"], evidence),
+        _responsibility("resp.evidence-review", "role.semantic-evaluation", "Assess evidence quality before expensive judgment.", ["function.evidence-review"], evidence),
+        _responsibility("resp.persona-pressure", "role.semantic-evaluation", "Pressure-test survivors against founder constraints and representative personas.", ["function.persona-pressure"], evidence),
+        _responsibility("resp.portfolio-selection", "role.portfolio-selection", "Select a balanced portfolio of defensible survivors.", ["function.portfolio-selection"], evidence),
+        _responsibility("resp.next-experiment", "role.portfolio-selection", "Attach the riskiest assumption and a bounded next experiment.", ["function.next-experiment"], evidence),
+        _responsibility("resp.outcome-capture", "role.outcome-ledger", "Record verdicts, feedback, and observed outcomes with provenance.", ["function.outcome-capture"], evidence),
+        _responsibility("resp.calibration", "role.calibration", "Suggest factor and threshold changes from observed prediction error.", ["function.calibration"], evidence),
+        _responsibility("resp.domain-contract", "role.domain-contract", "Define shared domain and LLM boundary contracts.", ["function.idea-screening"], evidence),
+        _responsibility("resp.operator-control", "role.operator-surface", "Present pipeline state and authenticate human control.", ["function.operator-control"], evidence),
+        _responsibility("resp.workflow-mirroring", "role.workflow-mirror", "Validate external workflow mirrors against the core contract.", ["function.workflow-mirroring"], evidence),
     ]
     relations = [
-        Relation(id="rel.signal-to-generation", source_role_id="role.signal-intelligence",
-                 target_role_id="role.candidate-generation", kind="exchanges_with", label="合格信号"),
-        Relation(id="rel.generation-to-evaluation", source_role_id="role.candidate-generation",
-                 target_role_id="role.evaluation-gate", kind="exchanges_with", label="已排序候选"),
-        Relation(id="rel.evaluation-to-learning", source_role_id="role.evaluation-gate",
-                 target_role_id="role.learning-loop", kind="exchanges_with", label="结论与结果"),
-        Relation(id="rel.all-to-contract", source_role_id="role.candidate-generation",
-                 target_role_id="role.domain-contract", kind="depends_on", label="模型与因子"),
-        Relation(id="rel.eval-to-contract", source_role_id="role.evaluation-gate",
-                 target_role_id="role.domain-contract", kind="depends_on", label="模型与证据"),
-        Relation(id="rel.surface-to-roles", source_role_id="role.operator-surface",
-                 target_role_id="role.evaluation-gate", kind="collaborates", label="审查与控制"),
-        Relation(id="rel.mirror-to-generation", source_role_id="role.workflow-mirror",
-                 target_role_id="role.candidate-generation", kind="depends_on", label="镜像契约"),
+        RoleRelation(id="relation.signals-to-candidates", source_role_id="role.signal-intelligence", target_role_id="role.candidate-generation", kind="exchanges_with", label="qualified signals"),
+        RoleRelation(id="relation.candidates-to-evaluation", source_role_id="role.candidate-generation", target_role_id="role.evaluation-gate", kind="exchanges_with", label="ranked candidates"),
+        RoleRelation(id="relation.evaluation-to-learning", source_role_id="role.evaluation-gate", target_role_id="role.learning-loop", kind="exchanges_with", label="verdicts and outcomes"),
+        RoleRelation(id="relation.contract-governs-generation", source_role_id="role.domain-contract", target_role_id="role.candidate-generation", kind="governs", label="models and factors"),
+        RoleRelation(id="relation.contract-governs-evaluation", source_role_id="role.domain-contract", target_role_id="role.evaluation-gate", kind="governs", label="evidence and personas"),
+        RoleRelation(id="relation.operator-to-evaluation", source_role_id="role.operator-surface", target_role_id="role.evaluation-gate", kind="collaborates", label="review and control"),
+        RoleRelation(id="relation.mirror-to-contract", source_role_id="role.workflow-mirror", target_role_id="role.domain-contract", kind="depends_on", label="core contract"),
     ]
-    trace_links = [
-        _trace("signal", "role.signal-intelligence", "src/idea_gen/collect.py", snapshot),
-        _trace("sources", "role.signal-intelligence", "src/idea_gen/sources", snapshot),
-        _trace("generation", "role.candidate-generation", "src/idea_gen/generate.py", snapshot),
-        _trace("ranking", "role.candidate-generation", "src/idea_gen/ranks.py", snapshot),
-        _trace("evaluation", "role.evaluation-gate", "src/idea_eval", snapshot),
-        _trace("learning", "role.learning-loop", "src/idea_eval/retro.py", snapshot),
-        _trace("calibration", "role.learning-loop", "src/idea_eval/calibrate.py", snapshot),
-        _trace("contract", "role.domain-contract", "src/idea_core", snapshot),
-        _trace("studio-server", "role.operator-surface", "studio/server", snapshot, kind="presents"),
-        _trace("studio-web", "role.operator-surface", "studio/web", snapshot, kind="presents"),
-        _trace("dify", "role.workflow-mirror", "dify", snapshot),
+    links = [
+        _function_link(item.id.replace("function.", "function-role."), item.id, role_id, "owns", evidence)
+        for item, role_id in (
+            (_find(functions, "function.signal-intake"), "role.signal-acquisition"),
+            (_find(functions, "function.signal-qualification"), "role.signal-qualification"),
+            (_find(functions, "function.candidate-generation"), "role.idea-synthesis"),
+            (_find(functions, "function.candidate-ranking"), "role.candidate-ranking"),
+            (_find(functions, "function.deterministic-gating"), "role.hard-gate"),
+            (_find(functions, "function.evidence-review"), "role.semantic-evaluation"),
+            (_find(functions, "function.persona-pressure"), "role.semantic-evaluation"),
+            (_find(functions, "function.portfolio-selection"), "role.portfolio-selection"),
+            (_find(functions, "function.next-experiment"), "role.portfolio-selection"),
+            (_find(functions, "function.outcome-capture"), "role.outcome-ledger"),
+            (_find(functions, "function.calibration"), "role.calibration"),
+            (_find(functions, "function.operator-control"), "role.operator-surface"),
+            (_find(functions, "function.workflow-mirroring"), "role.workflow-mirror"),
+        )
+    ]
+    links.extend([
+        _function_link("function-role.idea-contract", "function.idea-screening", "role.domain-contract", "governs", evidence),
+        _function_link("function-role.persona-contract", "function.persona-pressure", "role.domain-contract", "governs", evidence),
+        _function_link("function-role.operator-evaluation", "function.candidate-evaluation", "role.operator-surface", "contributes", evidence),
+    ])
+    traces = [
+        _trace("signal-acquisition", "role.signal-acquisition", "src/idea_gen/sources", snapshot),
+        _trace("signal-qualification", "role.signal-qualification", "src/idea_gen/normalize.py", snapshot),
+        _trace("idea-synthesis", "role.idea-synthesis", "src/idea_gen/generate.py", snapshot),
+        _trace("candidate-ranking", "role.candidate-ranking", "src/idea_gen/ranks.py", snapshot),
+        _trace("hard-gate", "role.hard-gate", "src/idea_eval/evaluate.py", snapshot),
+        _trace("semantic-evaluation", "role.semantic-evaluation", "src/idea_eval/persona_pressure.py", snapshot),
+        _trace("portfolio-selection", "role.portfolio-selection", "src/idea_eval/pipeline.py", snapshot),
+        _trace("outcome-ledger", "role.outcome-ledger", "src/idea_core/ledger.py", snapshot, kind="stores"),
+        _trace("calibration", "role.calibration", "src/idea_eval/calibrate.py", snapshot),
+        _trace("domain-contract", "role.domain-contract", "src/idea_core", snapshot),
+        _trace("operator-server", "role.operator-surface", "studio/server", snapshot, kind="presents"),
+        _trace("operator-web", "role.operator-surface", "studio/web", snapshot, kind="presents"),
+        _trace("workflow-mirror", "role.workflow-mirror", "dify", snapshot),
     ]
     return ProjectModel(
         project_id=snapshot.project_id,
-        name="想法工厂",
-        summary="一个描述如何把来源信号转化为经过筛选的创业想法和有边界实验的责任模型。",
+        name="Idea Factory",
+        summary="A living product-function catalog and responsibility model for screening startup ideas.",
         status="baseline",
-        goals=goals,
-        roles=roles,
+        product_functions=functions,
+        role_objects=roles,
         responsibilities=responsibilities,
-        relations=relations,
-        trace_links=trace_links,
+        role_relations=relations,
+        function_role_links=links,
+        trace_links=traces,
     )
 
 
-def _trace(
-    suffix: str, role_id: str, artifact_path: str, snapshot: RepositorySnapshot,
-    *, kind: str = "realizes",
-) -> TraceLink:
+def _function(identifier: str, name: str, description: str, parent_id: str | None, evidence: list[str], *, priority: str = "unset") -> ProductFunction:
+    return ProductFunction(id=identifier, name=name, description=description, parent_id=parent_id, priority=priority, source_ids=evidence)
+
+
+def _role(identifier: str, name: str, purpose: str, parent_id: str | None, evidence: list[str], *, inputs: list[str] | None = None, outputs: list[str] | None = None, constraints: list[str] | None = None, knowledge: list[str] | None = None) -> RoleObject:
+    return RoleObject(id=identifier, name=name, purpose=purpose, parent_id=parent_id, inputs=inputs or [], outputs=outputs or [], constraints=constraints or [], owns_knowledge=knowledge or [], source_ids=evidence)
+
+
+def _responsibility(identifier: str, role_id: str, statement: str, function_ids: list[str], evidence: list[str]) -> Responsibility:
+    return Responsibility(id=identifier, role_id=role_id, statement=statement, function_ids=function_ids, source_ids=evidence)
+
+
+def _function_link(identifier: str, function_id: str, role_id: str, kind: str, evidence: list[str]) -> FunctionRoleLink:
+    return FunctionRoleLink(id=identifier, function_id=function_id, role_id=role_id, kind=kind, confidence=0.9, evidence="Curated from the repository snapshot and responsibility review.", source_ids=evidence)
+
+
+def _find(functions: list[ProductFunction], identifier: str) -> ProductFunction:
+    return next(item for item in functions if item.id == identifier)
+
+
+def _trace(suffix: str, role_id: str, artifact_path: str, snapshot: RepositorySnapshot, *, kind: str = "realizes") -> TraceLink:
     known = {item.path for item in snapshot.artifacts}
     exists = artifact_path in known or any(path.startswith(f"{artifact_path.rstrip('/')}/") for path in known)
     return TraceLink(
-        id=f"trace.{suffix}", role_id=role_id, artifact_path=artifact_path,
-        kind=kind, confidence=0.96 if exists else 0.55, origin="agent",
-        evidence=f"源自 {snapshot.id}；扫描中{'已观察到' if exists else '未观察到'}该路径。",
+        id=f"trace.{suffix}", role_id=role_id, artifact_path=artifact_path, kind=kind,
+        confidence=0.96 if exists else 0.55, origin="agent",
+        evidence=f"Derived from {snapshot.id}; path {'observed' if exists else 'not observed'} in the scan.",
     )
