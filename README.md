@@ -128,6 +128,8 @@ MCP is the only model-mutation interface. Its capability graph exposes three wor
 
 Accepted intent and observed code are stored separately. A proposal names the exact model version it was based on; acceptance creates a new immutable version, and stale proposals cannot silently overwrite newer intent.
 
+Public deployments follow OC's split authorization model: a human signs in with username and password and receives a stateless HMAC-signed `HttpOnly` session cookie, while an agent connects to MCP with a separate bearer token. CoIntent intentionally does not inherit OC's private-core or device-access paths.
+
 ## Verification
 
 ```bash

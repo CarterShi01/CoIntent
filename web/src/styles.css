@@ -38,6 +38,8 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
 .meta-blue { border-color: #b8c5ff; background: var(--blue-soft); color: #2448d8; }
 .meta-amber { border-color: #efd7a9; background: #fff7e8; color: #9a650e; }
 .meta-mint { border-color: #a9dfd0; background: #eaf8f4; color: #14735c; }
+.session-button { border: 0; border-left: 1px solid var(--line); background: transparent; color: #5b687b; padding: 9px 0 9px 14px; font-family: "IBM Plex Mono", monospace; font-size: 8px; text-transform: uppercase; letter-spacing: .08em; cursor: pointer; }
+.session-button:hover { color: var(--blue); }
 
 .workspace { height: calc(100vh - 76px); display: grid; grid-template-columns: minmax(420px, 42%) minmax(600px, 58%); }
 .book-pane, .map-pane { min-height: 0; overflow: auto; }
@@ -117,6 +119,36 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
 .state-screen button { border: 0; background: var(--blue); color: white; border-radius: 5px; padding: 10px 14px; cursor: pointer; }
 .mobile-tabs { display: none; }
 
+.login-screen { min-height: 100vh; display: grid; grid-template-columns: minmax(430px, 1.2fr) minmax(420px, .8fr); background: #eef1f6; }
+.login-context { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; padding: clamp(48px, 8vw, 120px); background-color: var(--ink); background-image: radial-gradient(rgba(172,188,216,.18) .7px, transparent .7px); background-size: 19px 19px; color: white; }
+.login-context::after { content: "ROLE / RESPONSIBILITY / EVIDENCE"; position: absolute; left: clamp(48px, 8vw, 120px); bottom: 32px; font-family: "IBM Plex Mono", monospace; font-size: 8px; letter-spacing: .16em; color: #8f9db4; }
+.login-brand { position: absolute; top: 34px; left: clamp(48px, 8vw, 120px); display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 750; }
+.login-brand .intent-mark { width: 34px; height: 34px; }
+.login-brand .intent-mark circle { fill: var(--ink); }
+.login-context > .eyebrow { color: #91a8ff; }
+.login-context h1 { max-width: 720px; margin: 15px 0 21px; font-size: clamp(42px, 5.2vw, 76px); line-height: .97; letter-spacing: -.055em; }
+.login-context > p { max-width: 530px; margin: 0; color: #b8c3d3; font-size: 14px; line-height: 1.75; }
+.login-thread { position: absolute; top: 17%; right: -125px; width: 360px; height: 360px; border: 1px solid rgba(130,153,255,.22); border-radius: 50%; }
+.login-thread::before, .login-thread::after { content: ""; position: absolute; inset: 46px; border: 1px solid rgba(130,153,255,.18); border-radius: 50%; }
+.login-thread::after { inset: 102px; }
+.login-thread i { position: absolute; width: 9px; height: 9px; border: 2px solid #7894ff; border-radius: 50%; background: var(--ink); }
+.login-thread i:nth-child(1) { left: 13px; top: 170px; }
+.login-thread i:nth-child(2) { left: 64px; top: 58px; }
+.login-thread i:nth-child(3) { left: 74px; bottom: 50px; }
+.login-thread i:nth-child(4) { left: 157px; top: 174px; background: var(--blue); box-shadow: 0 0 0 8px rgba(49,92,255,.12); }
+.login-gate { display: grid; place-items: center; padding: 42px; background: var(--paper); }
+.login-gate form { width: min(390px, 100%); }
+.login-gate h2 { margin: 9px 0 7px; font-size: 30px; letter-spacing: -.045em; }
+.login-gate form > p { margin: 0 0 31px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.login-gate label { display: block; margin: 17px 0; color: #4d5b70; font-family: "IBM Plex Mono", monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.login-gate input { display: block; width: 100%; margin-top: 8px; padding: 13px 14px; border: 1px solid #cbd3df; border-radius: 5px; background: white; color: var(--ink); font: 14px "Manrope Variable", sans-serif; outline: none; }
+.login-gate input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(49,92,255,.12); }
+.login-gate button { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding: 13px 15px; border: 1px solid #2147dc; border-radius: 5px; background: var(--blue); color: white; font-weight: 680; cursor: pointer; }
+.login-gate button:disabled { opacity: .55; cursor: wait; }
+.login-gate button span { font-size: 20px; line-height: 1; }
+.login-gate small { display: block; margin-top: 13px; color: #8590a0; font-family: "IBM Plex Mono", monospace; font-size: 8px; text-align: center; }
+.login-error { margin-top: 12px; padding: 9px 11px; border-left: 3px solid var(--coral); background: #fff0ef; color: #a23f3b; font-size: 11px; }
+
 @keyframes resolve { from { opacity: 0; transform: scale(.84) rotate(-5deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
 
@@ -132,6 +164,7 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
   .brand-subtitle { display: none; }
   .topbar-meta .meta { display: none; }
   .topbar-meta .meta:first-child { display: block; min-width: auto; }
+  .session-button { display: none; }
   .mobile-tabs { height: 46px; display: grid; grid-template-columns: 1fr 1fr; background: var(--paper); border-bottom: 1px solid var(--line); }
   .mobile-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; }
   .mobile-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); }
@@ -141,4 +174,12 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
   .version-stamp, .legend { display: none; }
   .pane-heading h1 { font-size: 28px; }
   .graph-frame { min-height: 520px; }
+  .login-screen { display: block; background: var(--paper); }
+  .login-context { min-height: 310px; justify-content: flex-end; padding: 80px 24px 38px; }
+  .login-context h1 { font-size: 39px; }
+  .login-context > p { display: none; }
+  .login-context::after { display: none; }
+  .login-brand { top: 22px; left: 24px; }
+  .login-thread { width: 250px; height: 250px; top: -55px; right: -105px; }
+  .login-gate { padding: 36px 24px 50px; }
 }

@@ -19,14 +19,25 @@ cd "$APP_DIR"
 mkdir -p runtime seed web-dist
 if [ ! -f .env ]; then
   token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  login_password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
+  session_secret="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
   umask 077
   {
     printf 'COINTENT_PUBLIC_ORIGIN=https://cointent.enjoyapier.cloud\n'
     printf 'COINTENT_MCP_TOKEN=%s\n' "$token"
+    printf 'COINTENT_LOGIN_USER=carter\n'
+    printf 'COINTENT_LOGIN_PASSWORD=%s\n' "$login_password"
+    printf 'COINTENT_SESSION_SECRET=%s\n' "$session_secret"
+    printf 'COINTENT_SESSION_TTL_SECONDS=604800\n'
+    printf 'COINTENT_COOKIE_SECURE=1\n'
     printf 'COINTENT_PORT=8811\n'
   } > .env
-  printf 'created %s/.env with a private MCP bearer token\n' "$APP_DIR"
+  unset token login_password session_secret
+  printf 'created %s/.env with separate browser and MCP credentials\n' "$APP_DIR"
 fi
+grep -q '^COINTENT_LOGIN_USER=' .env || die "missing COINTENT_LOGIN_USER in .env"
+grep -q '^COINTENT_LOGIN_PASSWORD=' .env || die "missing COINTENT_LOGIN_PASSWORD in .env"
+grep -q '^COINTENT_MCP_TOKEN=' .env || die "missing COINTENT_MCP_TOKEN in .env"
 export COINTENT_RELEASE="$RELEASE_ID"
 
 log "build backend and web images"
@@ -73,8 +84,21 @@ docker compose ps
 log "local smoke"
 curl -fsS http://127.0.0.1:8811/api/health
 printf '\n'
-overview="$(curl -fsS 'http://127.0.0.1:8811/api/v1/overview?project_id=idea-factory')"
+set -a
+. ./.env
+set +a
+cookie_jar="$(mktemp)"
+trap 'rm -f "$cookie_jar"' EXIT
+login_payload="$(python3 -c 'import json,os; print(json.dumps({"user": os.environ["COINTENT_LOGIN_USER"], "password": os.environ["COINTENT_LOGIN_PASSWORD"]}))')"
+me="$(curl -fsS http://127.0.0.1:8811/api/me)"
+printf '%s' "$me" | grep -q '"login_required":true' || die "browser login is not required"
+unauth_api="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8811/api/v1/overview?project_id=idea-factory')"
+[ "$unauth_api" = "401" ] || die "unauthenticated API returned $unauth_api, expected 401"
+curl -fsS -c "$cookie_jar" -H 'Content-Type: application/json' \
+  --data "$login_payload" http://127.0.0.1:8811/api/login >/dev/null
+overview="$(curl -fsS -b "$cookie_jar" 'http://127.0.0.1:8811/api/v1/overview?project_id=idea-factory')"
 printf '%s' "$overview" | grep -q '"roles":8' || die "Idea Factory baseline is not available"
+printf 'browser session login -> 200; unauthenticated API -> 401\n'
 mcp_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8811/mcp)"
 [ "$mcp_code" = "401" ] || die "unauthenticated MCP returned $mcp_code, expected 401"
 printf 'MCP unauthenticated -> 401\n'

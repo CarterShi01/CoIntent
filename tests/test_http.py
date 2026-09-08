@@ -49,3 +49,35 @@ def test_streamable_http_mcp_requires_and_accepts_static_token(tmp_path: Path, m
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
     assert '"serverInfo"' in authorized.text
+
+
+def test_browser_api_uses_oc_style_signed_session(tmp_path: Path, monkeypatch) -> None:
+    database = tmp_path / "model.db"
+    CoIntentRepository(database).create_project("idea-factory", "Idea Factory")
+    monkeypatch.setenv("COINTENT_DB_PATH", str(database))
+    monkeypatch.setenv("COINTENT_LOGIN_USER", "carter")
+    monkeypatch.setenv("COINTENT_LOGIN_PASSWORD", "correct-horse-battery-staple")
+    monkeypatch.setenv("COINTENT_SESSION_SECRET", "independent-test-secret")
+    monkeypatch.setenv("COINTENT_PUBLIC_ORIGIN", "https://127.0.0.1:8811")
+
+    with TestClient(build_http_app(), base_url="https://127.0.0.1:8811") as client:
+        me = client.get("/api/me")
+        protected = client.get("/api/v1/model?project_id=idea-factory")
+        rejected = client.post("/api/login", json={"user": "carter", "password": "wrong"})
+        accepted = client.post(
+            "/api/login", json={"user": "carter", "password": "correct-horse-battery-staple"},
+        )
+        opened = client.get("/api/v1/model?project_id=idea-factory")
+        logout = client.post("/api/logout")
+        closed = client.get("/api/v1/model?project_id=idea-factory")
+
+    assert me.json() == {"login_required": True, "authed": False, "user": None, "bypass": False}
+    assert protected.status_code == 401
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    assert "HttpOnly" in accepted.headers["set-cookie"]
+    assert "SameSite=strict" in accepted.headers["set-cookie"]
+    assert "Secure" in accepted.headers["set-cookie"]
+    assert opened.status_code == 200
+    assert logout.status_code == 200
+    assert closed.status_code == 401

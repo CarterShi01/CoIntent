@@ -51,6 +51,10 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "serve":
         if args.host not in {"127.0.0.1", "localhost", "::1"} and not os.environ.get("COINTENT_MCP_TOKEN"):
             raise SystemExit("COINTENT_MCP_TOKEN is required for a non-loopback server")
+        if args.host not in {"127.0.0.1", "localhost", "::1"} and not (
+            os.environ.get("COINTENT_LOGIN_USER") and os.environ.get("COINTENT_LOGIN_PASSWORD")
+        ):
+            raise SystemExit("COINTENT_LOGIN_USER and COINTENT_LOGIN_PASSWORD are required for a non-loopback server")
         import uvicorn
         uvicorn.run("cointent.app:application", host=args.host, port=args.port, factory=False)
     elif args.command == "export-model":

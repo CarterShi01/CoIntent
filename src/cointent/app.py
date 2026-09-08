@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 
 from contexture import Principal
@@ -10,8 +11,11 @@ from contexture.server import Auth, compile_application
 from contexture.web import RestSurface, Route
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from .controller import app as declaration
+from .session import LoginThrottle, SESSION_COOKIE, SessionAuth
 
 
 class StaticTokenVerifier:
@@ -44,6 +48,8 @@ def build_http_app() -> Starlette:
     compiled = compile_application(declaration)
     runtime = compiled.runtime()
     rest = RestSurface(runtime, routes=REST_ROUTES)
+    browser_auth = SessionAuth.from_env()
+    login_throttle = LoginThrottle()
     token = os.environ.get("COINTENT_MCP_TOKEN", "")
     public_origin = os.environ.get("COINTENT_PUBLIC_ORIGIN", "http://127.0.0.1:8811").rstrip("/")
     auth = Auth(verifier=StaticTokenVerifier(token), issuer=public_origin,
@@ -61,12 +67,82 @@ def build_http_app() -> Starlette:
         path = str(scope.get("path", ""))
         if path.startswith("/mcp") or path.startswith("/.well-known/"):
             await mcp(scope, receive, send)
-        else:
+            return
+        if path == "/api/health":
             await rest(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        cookie_token = browser_auth.cookie_token(request.headers.get("cookie", ""))
+        session_user = browser_auth.verify(cookie_token)
+
+        if request.method == "GET" and path == "/api/me":
+            response = JSONResponse({
+                "login_required": browser_auth.enabled,
+                "authed": not browser_auth.enabled or session_user is not None,
+                "user": session_user,
+                "bypass": False,
+            })
+            await response(scope, receive, send)
+            return
+
+        if request.method == "POST" and path == "/api/login":
+            response = await _login(request, browser_auth, login_throttle)
+            await response(scope, receive, send)
+            return
+
+        if request.method == "POST" and path == "/api/logout":
+            response = JSONResponse({"ok": True})
+            response.set_cookie(
+                SESSION_COOKIE, "", max_age=0, expires=0, path="/", httponly=True,
+                secure=browser_auth.cookie_secure, samesite="strict",
+            )
+            await response(scope, receive, send)
+            return
+
+        if path.startswith("/api/") and browser_auth.enabled and session_user is None:
+            response = JSONResponse(
+                {"error": "unauthorized", "detail": "not logged in or session expired", "login_required": True},
+                status_code=401,
+            )
+            await response(scope, receive, send)
+            return
+        await rest(scope, receive, send)
 
     parent = Starlette(lifespan=mcp.router.lifespan_context)
     parent.mount("/", dispatch)
     return parent
+
+
+async def _login(request: Request, auth: SessionAuth, throttle: LoginThrottle) -> JSONResponse:
+    if not auth.enabled:
+        return JSONResponse({"ok": True, "user": None, "login_required": False})
+    source = request.client.host if request.client is not None else "unknown"
+    wait = throttle.blocked_for(source)
+    if wait:
+        return JSONResponse(
+            {"error": "too_many_attempts", "detail": f"try again in {wait} seconds", "retry_after_seconds": wait},
+            status_code=429, headers={"Retry-After": str(wait)},
+        )
+    try:
+        raw = await request.body()
+        if len(raw) > 4096:
+            return JSONResponse({"error": "request_too_large"}, status_code=413)
+        body = json.loads(raw)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    user = str(body.get("user", "")) if isinstance(body, dict) else ""
+    password = str(body.get("password", "")) if isinstance(body, dict) else ""
+    if not auth.credentials_valid(user, password):
+        throttle.fail(source)
+        return JSONResponse({"error": "bad_credentials", "detail": "incorrect username or password"}, status_code=401)
+    throttle.reset(source)
+    response = JSONResponse({"ok": True, "user": auth.user, "login_required": True})
+    response.set_cookie(
+        SESSION_COOKIE, auth.issue(), max_age=auth.ttl_seconds, path="/", httponly=True,
+        secure=auth.cookie_secure, samesite="strict",
+    )
+    return response
 
 
 application = build_http_app()

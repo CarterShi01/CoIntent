@@ -1,17 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { loadWorkspace } from "./api";
+import { fetchSession, loadWorkspace, login, logout } from "./api";
 import type { Finding, ModelResponse, OverviewResponse, RoleRecord } from "./types";
 
 type Workspace = { model: ModelResponse; overview: OverviewResponse; findings: Finding[] };
+type Auth = { state: "checking" } | { state: "out" } | { state: "in"; user: string | null };
 
 function App() {
+  const [auth, setAuth] = useState<Auth>({ state: "checking" });
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [selectedRole, setSelectedRole] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [mobileView, setMobileView] = useState<"book" | "map">("book");
 
   useEffect(() => {
+    fetchSession()
+      .then((session) => setAuth(session.authed ? { state: "in", user: session.user } : { state: "out" }))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, []);
+
+  useEffect(() => {
+    if (auth.state !== "in") return;
     loadWorkspace()
       .then((next) => {
         setWorkspace(next);
@@ -21,11 +30,16 @@ function App() {
             ?? "",
         );
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, []);
+      .catch((reason: unknown) => {
+        if (reason instanceof Error && reason.message.startsWith("401 ")) setAuth({ state: "out" });
+        else setError(reason instanceof Error ? reason.message : String(reason));
+      });
+  }, [auth.state]);
 
   if (error) return <Failure message={error} />;
-  if (!workspace) return <Loading />;
+  if (auth.state === "checking") return <Loading label="Checking access…" />;
+  if (auth.state === "out") return <LoginScreen onDone={(user) => setAuth({ state: "in", user })} />;
+  if (!workspace) return <Loading label="Opening the responsibility model…" />;
 
   const { model: response, overview, findings } = workspace;
   const model = response.model;
@@ -50,6 +64,12 @@ function App() {
           <Meta label="Model" value={`v${response.version} · ${model.status}`} tone="blue" />
           <Meta label="Code" value={`${shortRevision}${overview.latest_snapshot?.dirty ? " · dirty" : ""}`} />
           <Meta label="Alignment" value={`${overview.counts.open_findings} open`} tone={overview.counts.open_findings ? "amber" : "mint"} />
+          <button className="session-button" onClick={() => {
+            void logout().finally(() => {
+              setWorkspace(null);
+              setAuth({ state: "out" });
+            });
+          }}>{auth.user ?? "carter"} · sign out</button>
         </div>
       </header>
 
@@ -220,8 +240,46 @@ function AlignmentRail({ findings, roles, onSelectRole }: { findings: Finding[];
   </aside>;
 }
 
-function Loading() {
-  return <div className="state-screen"><IntentMark /><span>Opening the responsibility model…</span></div>;
+function LoginScreen({ onDone }: { onDone: (user: string) => void }) {
+  const [user, setUser] = useState("carter");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  return <main className="login-screen">
+    <section className="login-context" aria-label="CoIntent introduction">
+      <div className="login-brand"><IntentMark /><span>CoIntent</span></div>
+      <div className="login-thread" aria-hidden="true"><i /><i /><i /><i /></div>
+      <span className="eyebrow">Human intent / agent implementation</span>
+      <h1>See the system<br />at responsibility scale.</h1>
+      <p>Goals become roles. Roles stay mapped to implementation. Every accepted change keeps its evidence.</p>
+    </section>
+    <section className="login-gate">
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        setBusy(true);
+        setMessage("");
+        void login(user, password)
+          .then((result) => onDone(result.user))
+          .catch((reason: unknown) => setMessage(reason instanceof Error && reason.message.startsWith("429 ")
+            ? "Too many attempts. Wait a few minutes and try again."
+            : "The username or password is incorrect."))
+          .finally(() => setBusy(false));
+      }}>
+        <span className="eyebrow">Private workspace</span>
+        <h2>Continue to the model</h2>
+        <p>This human session is separate from the agent’s MCP credential.</p>
+        <label>Username<input name="username" autoComplete="username" value={user} onChange={(event) => setUser(event.target.value)} /></label>
+        <label>Password<input name="password" type="password" autoComplete="current-password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {message && <div className="login-error" role="alert">{message}</div>}
+        <button type="submit" disabled={busy || !user || !password}>{busy ? "Checking…" : "Open CoIntent"}<span>→</span></button>
+        <small>Signed session · HttpOnly · SameSite Strict · 7 days</small>
+      </form>
+    </section>
+  </main>;
+}
+
+function Loading({ label }: { label: string }) {
+  return <div className="state-screen"><IntentMark /><span>{label}</span></div>;
 }
 
 function Failure({ message }: { message: string }) {

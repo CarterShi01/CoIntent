@@ -60,6 +60,8 @@ fi
 log "public smoke"
 curl -fsS "$PUBLIC_ORIGIN/" | grep -q '<title>CoIntent'
 curl -fsS "$PUBLIC_ORIGIN/api/health" | grep -q '"ok":true'
+api_code="$(curl -sS -o /dev/null -w '%{http_code}' "$PUBLIC_ORIGIN/api/v1/overview?project_id=idea-factory")"
+[ "$api_code" = "401" ] || die "public browser API returned $api_code without a session, expected 401"
 mcp_code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$PUBLIC_ORIGIN/mcp")"
 [ "$mcp_code" = "401" ] || die "public MCP returned $mcp_code, expected 401"
 printf 'public CoIntent release is healthy\n'

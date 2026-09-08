@@ -113,7 +113,7 @@ For a local process-based client, `cointent mcp` serves the same declaration ove
 | `GET /api/v1/snapshots` | `project_id` | observed facts and deltas |
 | `GET /api/v1/findings` | `project_id`, optional `status` | drift review queue |
 
-REST is intentionally read-only. Production binds the application to loopback and exposes it through the host Nginx. The web UI and REST routes are protected together by Nginx Basic Auth. MCP mutation uses an independent bearer token, and MCP discovery metadata remains public so protocol clients can authenticate correctly.
+REST is intentionally read-only. Production binds the application to loopback and exposes it through the host Nginx. Like OC, browser access uses an application-level login that issues a signed, stateless, `HttpOnly; Secure; SameSite=Strict` cookie. Login failures are throttled to eight attempts per five-minute window. MCP uses an independent bearer token, and MCP discovery metadata remains public so protocol clients can authenticate correctly.
 
 ## 6. Incremental scan contract
 
@@ -218,7 +218,7 @@ cd /home/deploy/cointent
 sudo bash deploy/install-host.sh
 ```
 
-The installer asks for a real Let's Encrypt notification email. It installs the staged `carter` password hash when one is present; otherwise it securely prompts for a password of at least 20 characters. The plaintext web password is never stored by CoIntent. ACME challenges and MCP protocol routes explicitly bypass Basic Auth: certificate issuance needs the former, while `/mcp` retains its separate bearer-token boundary.
+The installer asks for a real Let's Encrypt notification email. Browser credentials live only in the mode-`0600` deployment environment file, following OC's bootstrap model; session cookies are HMAC-signed and require no session table. Changing the password or the independent session secret invalidates every existing browser session. CoIntent does not copy OC's private-core, partner, device-setup, or Tailscale authorization paths because this deployment has no reason to reach the core machine.
 
 The unprivileged release path can create `/var/www/cointent` through its Docker access, matching the existing One Creator static-publish approach. It cannot safely install an Nginx site or obtain a Let's Encrypt certificate without one-time host authority.
 
@@ -229,7 +229,7 @@ The unprivileged release path can create `/var/www/cointent` through its Docker 
 - Findings are path/dependency evidence; an external agent supplies semantic review.
 - Conversation capture is explicit through `record-intent`; automatic host transcript hooks are not yet defined.
 - The web client is read-only; proposal review happens through an agent host in this version.
-- Static bearer authentication is sufficient for a single-owner MVP, not a multi-tenant product.
+- Static bearer authentication for MCP is sufficient for a single-owner MVP, not a multi-tenant product.
 - SQLite is appropriate for one process and one owner; distributed workers require a different persistence/concurrency design.
 
 These limits preserve the important boundary: CoIntent may be incomplete, but it must not claim certainty it does not have.
