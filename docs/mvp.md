@@ -113,7 +113,7 @@ For a local process-based client, `cointent mcp` serves the same declaration ove
 | `GET /api/v1/snapshots` | `project_id` | observed facts and deltas |
 | `GET /api/v1/findings` | `project_id`, optional `status` | drift review queue |
 
-REST is intentionally read-only. Production binds the application to loopback and exposes it through the host Nginx. MCP mutation remains bearer-protected.
+REST is intentionally read-only. Production binds the application to loopback and exposes it through the host Nginx. The web UI and REST routes are protected together by Nginx Basic Auth. MCP mutation uses an independent bearer token, and MCP discovery metadata remains public so protocol clients can authenticate correctly.
 
 ## 6. Incremental scan contract
 
@@ -215,8 +215,10 @@ One-time host setup requires root and must run only after the DNS A/AAAA records
 
 ```bash
 cd /home/deploy/cointent
-sudo CERTBOT_EMAIL=operator@example.com bash deploy/install-host.sh
+sudo bash deploy/install-host.sh
 ```
+
+The installer asks for a real Let's Encrypt notification email. It installs the staged `carter` password hash when one is present; otherwise it securely prompts for a password of at least 20 characters. The plaintext web password is never stored by CoIntent. ACME challenges and MCP protocol routes explicitly bypass Basic Auth: certificate issuance needs the former, while `/mcp` retains its separate bearer-token boundary.
 
 The unprivileged release path can create `/var/www/cointent` through its Docker access, matching the existing One Creator static-publish approach. It cannot safely install an Nginx site or obtain a Let's Encrypt certificate without one-time host authority.
 
