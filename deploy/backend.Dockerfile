@@ -18,6 +18,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-package contexture-mcp \
+    && uv pip install --python .venv/bin/python --no-deps /tmp/contexture/contexture_mcp-*.whl \
+    && .venv/bin/python -c "import cointent, contexture" \
     && rm -rf /tmp/contexture
 
 ENV PATH="/app/.venv/bin:$PATH" \
