@@ -1,0 +1,12 @@
+[project]
+name = "cointent"
+version = "0.1.0"
+description = "Software design convergence and implementation alignment for humans and agents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "contexture-mcp @ git+https://github.com/CarterShi01/contexture-mcp.git@bf4e0c3fbdbf5162d08406382f60f88aece4fc30",
+]
+
+[tool.uv]
+package = false
