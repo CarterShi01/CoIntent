@@ -229,7 +229,7 @@ The unprivileged release path can create `/var/www/cointent` through its Docker 
 - The scanner understands coarse files and selected import relationships, not runtime behavior.
 - Findings are path/dependency evidence; an external agent supplies semantic review.
 - Conversation capture is explicit through `record-intent`; automatic host transcript hooks are not yet defined.
-- The web client is read-only; proposal review happens through an agent host in this version.
+- The web client is read-only and displays the pending proposal queue; acceptance or rejection happens through an agent host in this version.
 - Static bearer authentication for MCP is sufficient for a single-owner MVP, not a multi-tenant product.
 - SQLite is appropriate for one process and one owner; distributed workers require a different persistence/concurrency design.
 

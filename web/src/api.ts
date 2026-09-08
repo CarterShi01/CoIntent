@@ -1,4 +1,4 @@
-import type { Finding, ModelResponse, OverviewResponse } from "./types";
+import type { Finding, ModelResponse, OverviewResponse, Proposal } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -15,12 +15,13 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export async function loadWorkspace(projectId = "idea-factory") {
   const query = new URLSearchParams({ project_id: projectId });
-  const [model, overview, findings] = await Promise.all([
+  const [model, overview, findings, proposals] = await Promise.all([
     call<ModelResponse>(`/api/v1/model?${query}`),
     call<OverviewResponse>(`/api/v1/overview?${query}`),
     call<{ findings: Finding[] }>(`/api/v1/findings?${query}`),
+    call<{ proposals: Proposal[] }>(`/api/v1/proposals?${query}`),
   ]);
-  return { model, overview, findings: findings.findings };
+  return { model, overview, findings: findings.findings, proposals: proposals.proposals };
 }
 
 export interface SessionState {

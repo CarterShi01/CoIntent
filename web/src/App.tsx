@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { fetchSession, loadWorkspace, login, logout } from "./api";
-import type { Finding, ModelResponse, OverviewResponse, RoleRecord } from "./types";
+import type { Finding, ModelResponse, OverviewResponse, Proposal, RoleRecord } from "./types";
 
-type Workspace = { model: ModelResponse; overview: OverviewResponse; findings: Finding[] };
+type Workspace = { model: ModelResponse; overview: OverviewResponse; findings: Finding[]; proposals: Proposal[] };
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; user: string | null };
 
 function App() {
@@ -37,14 +37,14 @@ function App() {
   }, [auth.state]);
 
   if (error) return <Failure message={error} />;
-  if (auth.state === "checking") return <Loading label="Checking access…" />;
+  if (auth.state === "checking") return <Loading label="正在检查访问权限…" />;
   if (auth.state === "out") return <LoginScreen onDone={(user) => setAuth({ state: "in", user })} />;
-  if (!workspace) return <Loading label="Opening the responsibility model…" />;
+  if (!workspace) return <Loading label="正在打开责任模型…" />;
 
-  const { model: response, overview, findings } = workspace;
+  const { model: response, overview, findings, proposals } = workspace;
   const model = response.model;
   const selected = model.roles.find((role) => role.id === selectedRole) ?? model.roles[0];
-  const shortRevision = overview.latest_snapshot?.revision.slice(0, 8) ?? "no scan";
+  const shortRevision = overview.latest_snapshot?.revision.slice(0, 8) ?? "尚未扫描";
 
   return (
     <div className="app-shell">
@@ -53,45 +53,45 @@ function App() {
           <IntentMark />
           <div>
             <div className="brand">CoIntent</div>
-            <div className="brand-subtitle">intent ↔ implementation</div>
+            <div className="brand-subtitle">意图 ↔ 实现</div>
           </div>
         </div>
         <div className="project-identity">
-          <span className="eyebrow">Observed project</span>
+          <span className="eyebrow">观察项目</span>
           <strong>{model.name}</strong>
         </div>
         <div className="topbar-meta">
-          <Meta label="Model" value={`v${response.version} · ${model.status}`} tone="blue" />
-          <Meta label="Code" value={`${shortRevision}${overview.latest_snapshot?.dirty ? " · dirty" : ""}`} />
-          <Meta label="Alignment" value={`${overview.counts.open_findings} open`} tone={overview.counts.open_findings ? "amber" : "mint"} />
+          <Meta label="模型" value={`v${response.version} · ${statusLabel(model.status)}`} tone="blue" />
+          <Meta label="代码" value={`${shortRevision}${overview.latest_snapshot?.dirty ? " · 有未提交改动" : ""}`} />
+          <Meta label="对齐" value={`${overview.counts.open_findings} 项待处理`} tone={overview.counts.open_findings ? "amber" : "mint"} />
           <button className="session-button" onClick={() => {
             void logout().finally(() => {
               setWorkspace(null);
               setAuth({ state: "out" });
             });
-          }}>{auth.user ?? "carter"} · sign out</button>
+          }}>{auth.user ?? "carter"} · 退出</button>
         </div>
       </header>
 
-      <nav className="mobile-tabs" aria-label="Workspace view">
-        <button className={mobileView === "book" ? "active" : ""} onClick={() => setMobileView("book")}>Role book</button>
-        <button className={mobileView === "map" ? "active" : ""} onClick={() => setMobileView("map")}>System map</button>
+      <nav className="mobile-tabs" aria-label="工作区视图">
+        <button className={mobileView === "book" ? "active" : ""} onClick={() => setMobileView("book")}>Role 说明书</button>
+        <button className={mobileView === "map" ? "active" : ""} onClick={() => setMobileView("map")}>系统图谱</button>
       </nav>
 
       <main className="workspace">
         <section className={`book-pane ${mobileView === "book" ? "mobile-active" : ""}`}>
           <div className="pane-heading">
             <div>
-              <span className="eyebrow">Intended system</span>
-              <h1>Responsibility book</h1>
+              <span className="eyebrow">期望系统</span>
+              <h1>责任说明书</h1>
             </div>
-            <span className="version-stamp">BASELINE / {response.version}</span>
+            <span className="version-stamp">基线 / {response.version}</span>
           </div>
 
           <p className="thesis">{model.summary}</p>
 
           <section className="goal-section">
-            <SectionLabel index="A" title="Goals" count={model.goals.length} />
+            <SectionLabel index="A" title="目标" count={model.goals.length} />
             <div className="goal-thread">
               {model.goals.map((goal) => (
                 <article className="goal" key={goal.id}>
@@ -106,13 +106,13 @@ function App() {
           </section>
 
           <section className="role-section">
-            <SectionLabel index="B" title="Responsibility owners" count={model.roles.length} />
+            <SectionLabel index="B" title="责任主体" count={model.roles.length} />
             <RoleTree roles={model.roles} selected={selectedRole} onSelect={setSelectedRole} />
           </section>
 
           {selected && (
             <section className="role-detail" aria-live="polite">
-              <div className="detail-kicker">Selected role</div>
+              <div className="detail-kicker">当前 Role</div>
               <h2>{selected.name}</h2>
               <p className="role-purpose">{selected.purpose}</p>
               <div className="responsibilities">
@@ -124,11 +124,11 @@ function App() {
                 ))}
               </div>
               <div className="artifact-list">
-                <span className="eyebrow">Implementation evidence</span>
+                <span className="eyebrow">实现证据</span>
                 {model.trace_links.filter((link) => link.role_id === selected.id).map((link) => (
                   <code key={link.id}>{link.artifact_path}</code>
                 ))}
-                {!model.trace_links.some((link) => link.role_id === selected.id) && <em>No implementation mapping yet.</em>}
+                {!model.trace_links.some((link) => link.role_id === selected.id) && <em>尚无实现映射。</em>}
               </div>
             </section>
           )}
@@ -137,13 +137,13 @@ function App() {
         <section className={`map-pane ${mobileView === "map" ? "mobile-active" : ""}`}>
           <div className="pane-heading map-heading">
             <div>
-              <span className="eyebrow">System projection</span>
-              <h1>Role topology</h1>
+              <span className="eyebrow">系统投影</span>
+              <h1>Role 拓扑</h1>
             </div>
-            <div className="legend"><span className="legend-line" /> contains <span className="legend-dash" /> collaborates</div>
+            <div className="legend"><span className="legend-line" /> 包含 <span className="legend-dash" /> 协作</div>
           </div>
           <RoleGraph roles={model.roles} relations={model.relations} selected={selectedRole} onSelect={setSelectedRole} />
-          <AlignmentRail findings={findings} roles={model.roles} onSelectRole={setSelectedRole} />
+          <AlignmentRail findings={findings} proposals={proposals} roles={model.roles} onSelectRole={setSelectedRole} />
         </section>
       </main>
     </div>
@@ -175,9 +175,9 @@ function RoleTree({ roles, selected, onSelect }: { roles: RoleRecord[]; selected
   const render = (parent: string | null, depth: number) => (children.get(parent) ?? []).map((role) => (
     <div key={role.id}>
       <button className={`role-row ${selected === role.id ? "selected" : ""}`} style={{ "--depth": depth } as CSSProperties} onClick={() => onSelect(role.id)}>
-        <span className="role-index">{depth === 0 ? "ROOT" : `L${depth}`}</span>
+        <span className="role-index">{depth === 0 ? "根" : `第 ${depth} 层`}</span>
         <span>{role.name}</span>
-        <span className="role-state">{role.status}</span>
+        <span className="role-state">{statusLabel(role.status)}</span>
       </button>
       {render(role.id, depth + 1)}
     </div>
@@ -203,7 +203,7 @@ function RoleGraph({ roles, relations, selected, onSelect }: {
   const byId = new Map(positioned.map((role) => [role.id, role]));
   const height = Math.max(560, ...positioned.map((role) => role.y + role.height + 60));
   return <div className="graph-frame">
-    <div className="graph-coordinate">ROLE MODEL / RESPONSIBILITY SCALE</div>
+    <div className="graph-coordinate">ROLE 模型 / 责任尺度</div>
     <div className="graph-canvas" style={{ height }}>
       <svg width="100%" height={height} aria-hidden="true">
         <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" /></marker></defs>
@@ -222,22 +222,48 @@ function RoleGraph({ roles, relations, selected, onSelect }: {
       {positioned.map((role) => (
         <button key={role.id} className={`graph-node ${selected === role.id ? "selected" : ""} ${role.parent_id ? "" : "root"}`}
           style={{ left: role.x, top: role.y, width: role.width, minHeight: role.height }} onClick={() => onSelect(role.id)}>
-          <span>{role.parent_id ? "ROLE" : "SYSTEM"}</span><strong>{role.name}</strong><p>{role.purpose}</p>
+          <span>{role.parent_id ? "ROLE" : "系统"}</span><strong>{role.name}</strong><p>{role.purpose}</p>
         </button>
       ))}
     </div>
   </div>;
 }
 
-function AlignmentRail({ findings, roles, onSelectRole }: { findings: Finding[]; roles: RoleRecord[]; onSelectRole: (id: string) => void }) {
+function AlignmentRail({ findings, proposals, roles, onSelectRole }: {
+  findings: Finding[];
+  proposals: Proposal[];
+  roles: RoleRecord[];
+  onSelectRole: (id: string) => void;
+}) {
   return <aside className="alignment-rail">
-    <div className="rail-title"><span className="pulse" /> Alignment review <em>{findings.length}</em></div>
-    {findings.length === 0 ? <p className="all-clear">No open drift findings. The current scan has not challenged the accepted model.</p> : findings.slice(0, 4).map((finding) => (
+    <div className="rail-title"><span className="pulse" /> 对齐审查 <em>{findings.length} 项偏差 · {proposals.length} 项提案</em></div>
+    {proposals.map((proposal) => <ProposalCard key={proposal.id} proposal={proposal} />)}
+    {findings.length === 0 ? <p className="all-clear">当前扫描没有发现挑战已接受模型的开放偏差。</p> : findings.slice(0, 4).map((finding) => (
       <button key={finding.id} className={`finding severity-${finding.severity}`} onClick={() => finding.role_ids[0] && onSelectRole(finding.role_ids[0])}>
-        <span>{finding.kind}</span><strong>{finding.summary}</strong><small>{finding.role_ids.map((id) => roles.find((role) => role.id === id)?.name ?? id).join(" · ") || "Unmapped"}</small>
+        <span>{findingKindLabel(finding.kind)}</span><strong>{finding.summary}</strong><small>{finding.role_ids.map((id) => roles.find((role) => role.id === id)?.name ?? id).join(" · ") || "尚未映射"}</small>
       </button>
     ))}
   </aside>;
+}
+
+function ProposalCard({ proposal }: { proposal: Proposal }) {
+  const sections: [string, keyof Pick<Proposal["diff"], "goals" | "roles" | "responsibilities" | "relations" | "trace_links">][] = [
+    ["目标", "goals"], ["Role", "roles"], ["职责", "responsibilities"], ["关系", "relations"], ["实现映射", "trace_links"],
+  ];
+  const changes = sections.flatMap(([label, key]) => {
+    const value = proposal.diff[key];
+    return [
+      ...value.added.map((id) => `${label} + ${id}`),
+      ...value.changed.map((id) => `${label} ~ ${id}`),
+      ...value.removed.map((id) => `${label} − ${id}`),
+    ];
+  });
+  return <article className="proposal-card">
+    <div><span>待审提案</span><code>{proposal.id}</code></div>
+    <strong>{proposal.rationale}</strong>
+    <p>{changes.join(" · ") || "仅修改模型摘要或状态"}</p>
+    <small>基于 v{proposal.base_version} · 请在 Agent 中明确接受或拒绝</small>
+  </article>;
 }
 
 function LoginScreen({ onDone }: { onDone: (user: string) => void }) {
@@ -246,12 +272,12 @@ function LoginScreen({ onDone }: { onDone: (user: string) => void }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   return <main className="login-screen">
-    <section className="login-context" aria-label="CoIntent introduction">
+    <section className="login-context" aria-label="CoIntent 介绍">
       <div className="login-brand"><IntentMark /><span>CoIntent</span></div>
       <div className="login-thread" aria-hidden="true"><i /><i /><i /><i /></div>
-      <span className="eyebrow">Human intent / agent implementation</span>
-      <h1>See the system<br />at responsibility scale.</h1>
-      <p>Goals become roles. Roles stay mapped to implementation. Every accepted change keeps its evidence.</p>
+      <span className="eyebrow">人的意图 / Agent 的实现</span>
+      <h1>在责任尺度上<br />看见整个系统。</h1>
+      <p>目标逐步形成 Role，Role 持续映射实现，每一次被接受的变化都保留证据。</p>
     </section>
     <section className="login-gate">
       <form onSubmit={(event) => {
@@ -261,18 +287,18 @@ function LoginScreen({ onDone }: { onDone: (user: string) => void }) {
         void login(user, password)
           .then((result) => onDone(result.user))
           .catch((reason: unknown) => setMessage(reason instanceof Error && reason.message.startsWith("429 ")
-            ? "Too many attempts. Wait a few minutes and try again."
-            : "The username or password is incorrect."))
+            ? "尝试次数过多，请等待几分钟后重试。"
+            : "用户名或密码不正确。"))
           .finally(() => setBusy(false));
       }}>
-        <span className="eyebrow">Private workspace</span>
-        <h2>Continue to the model</h2>
-        <p>This human session is separate from the agent’s MCP credential.</p>
-        <label>Username<input name="username" autoComplete="username" value={user} onChange={(event) => setUser(event.target.value)} /></label>
-        <label>Password<input name="password" type="password" autoComplete="current-password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        <span className="eyebrow">私有工作区</span>
+        <h2>进入责任模型</h2>
+        <p>人的登录会话与 Agent 使用的 MCP 凭证相互独立。</p>
+        <label>用户名<input name="username" autoComplete="username" value={user} onChange={(event) => setUser(event.target.value)} /></label>
+        <label>密码<input name="password" type="password" autoComplete="current-password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         {message && <div className="login-error" role="alert">{message}</div>}
-        <button type="submit" disabled={busy || !user || !password}>{busy ? "Checking…" : "Open CoIntent"}<span>→</span></button>
-        <small>Signed session · HttpOnly · SameSite Strict · 7 days</small>
+        <button type="submit" disabled={busy || !user || !password}>{busy ? "正在验证…" : "打开 CoIntent"}<span>→</span></button>
+        <small>签名会话 · HttpOnly · SameSite Strict · 7 天</small>
       </form>
     </section>
   </main>;
@@ -283,7 +309,15 @@ function Loading({ label }: { label: string }) {
 }
 
 function Failure({ message }: { message: string }) {
-  return <div className="state-screen failure"><IntentMark /><h1>The model could not be opened.</h1><p>{message}</p><button onClick={() => location.reload()}>Try again</button></div>;
+  return <div className="state-screen failure"><IntentMark /><h1>无法打开模型。</h1><p>{message}</p><button onClick={() => location.reload()}>重试</button></div>;
+}
+
+function statusLabel(status: string) {
+  return ({ baseline: "基线", draft: "草案", accepted: "已接受", questioned: "待确认", open: "开放", deferred: "暂缓" } as Record<string, string>)[status] ?? status;
+}
+
+function findingKindLabel(kind: string) {
+  return ({ convergent: "一致", absent: "缺失", divergent: "偏离", boundary_change: "边界变化", unmapped: "未映射", uncertain: "不确定", accepted_exception: "已接受例外" } as Record<string, string>)[kind] ?? kind;
 }
 
 export default App;

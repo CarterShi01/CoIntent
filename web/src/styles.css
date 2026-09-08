@@ -1,5 +1,5 @@
 :root {
-  font-family: "Manrope Variable", "Avenir Next", sans-serif;
+  font-family: "Manrope Variable", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   color: #18243a;
   background: #e8ecf2;
   font-synthesis: none;
@@ -106,6 +106,13 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
 .rail-title em { margin-left: auto; font-style: normal; color: var(--muted); }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 4px rgba(28,155,123,.13); }
 .all-clear { color: #637083; font-size: 11px; margin: 0; padding: 14px; }
+.proposal-card { padding: 14px; border-bottom: 1px solid #dbe0e8; background: #fff9ed; }
+.proposal-card > div { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.proposal-card > div span { color: #95620f; font-size: 9px; font-weight: 750; letter-spacing: .08em; }
+.proposal-card code { margin-left: auto; color: #8a6a36; font: 8px "IBM Plex Mono", monospace; }
+.proposal-card strong { display: block; font-size: 10px; line-height: 1.55; }
+.proposal-card p { margin: 7px 0; color: #6f5b3d; font: 8px/1.6 "IBM Plex Mono", monospace; }
+.proposal-card small { color: var(--muted); font-size: 8px; }
 .finding { width: 100%; display: grid; grid-template-columns: 95px 1fr auto; align-items: center; gap: 12px; padding: 11px 14px; border: 0; border-bottom: 1px solid #e1e5eb; background: transparent; text-align: left; cursor: pointer; }
 .finding:hover { background: #f1f3f7; }
 .finding span { font-family: "IBM Plex Mono", monospace; font-size: 8px; color: var(--amber); }
@@ -121,7 +128,7 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
 
 .login-screen { min-height: 100vh; display: grid; grid-template-columns: minmax(430px, 1.2fr) minmax(420px, .8fr); background: #eef1f6; }
 .login-context { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; padding: clamp(48px, 8vw, 120px); background-color: var(--ink); background-image: radial-gradient(rgba(172,188,216,.18) .7px, transparent .7px); background-size: 19px 19px; color: white; }
-.login-context::after { content: "ROLE / RESPONSIBILITY / EVIDENCE"; position: absolute; left: clamp(48px, 8vw, 120px); bottom: 32px; font-family: "IBM Plex Mono", monospace; font-size: 8px; letter-spacing: .16em; color: #8f9db4; }
+.login-context::after { content: "ROLE / 责任 / 证据"; position: absolute; left: clamp(48px, 8vw, 120px); bottom: 32px; font-family: "IBM Plex Mono", monospace; font-size: 8px; letter-spacing: .16em; color: #8f9db4; }
 .login-brand { position: absolute; top: 34px; left: clamp(48px, 8vw, 120px); display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 750; }
 .login-brand .intent-mark { width: 34px; height: 34px; }
 .login-brand .intent-mark circle { fill: var(--ink); }
@@ -141,7 +148,7 @@ button:focus-visible { outline: 3px solid rgba(49, 92, 255, .35); outline-offset
 .login-gate h2 { margin: 9px 0 7px; font-size: 30px; letter-spacing: -.045em; }
 .login-gate form > p { margin: 0 0 31px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .login-gate label { display: block; margin: 17px 0; color: #4d5b70; font-family: "IBM Plex Mono", monospace; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.login-gate input { display: block; width: 100%; margin-top: 8px; padding: 13px 14px; border: 1px solid #cbd3df; border-radius: 5px; background: white; color: var(--ink); font: 14px "Manrope Variable", sans-serif; outline: none; }
+.login-gate input { display: block; width: 100%; margin-top: 8px; padding: 13px 14px; border: 1px solid #cbd3df; border-radius: 5px; background: white; color: var(--ink); font: 14px "Manrope Variable", "PingFang SC", "Microsoft YaHei", sans-serif; outline: none; }
 .login-gate input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(49,92,255,.12); }
 .login-gate button { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding: 13px 15px; border: 1px solid #2147dc; border-radius: 5px; background: var(--blue); color: white; font-weight: 680; cursor: pointer; }
 .login-gate button:disabled { opacity: .55; cursor: wait; }

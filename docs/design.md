@@ -88,7 +88,7 @@ CoIntent adopts the following ideas:
 - stop decomposing when a goal can be assigned, verified, or operationalized;
 - connect goals to the roles responsible for achieving them.
 
-Reference: [Goal-Driven Requirements Engineering: the KAOS Approach](https://webperso.info.ucl.ac.be/~avl/gore.php)
+Reference: [KAOS tutorial](https://objectiver.com/fileadmin/download/documents/KaosTutorial.pdf)
 
 ### 4.2 OOram role modeling
 
@@ -127,7 +127,7 @@ CoIntent does not adopt IDEF0 as its primary model, because a function does not 
 - controls and invariants that constrain behavior;
 - mechanisms or realizers that perform the work.
 
-Reference: [NIST Integration Definition for Function Modeling (IDEF0)](https://nvlpubs.nist.gov/nistpubs/Legacy/FIPS/fipspub183.pdf)
+Reference: [NIST Integration Definition for Function Modeling (IDEF0)](https://www.govinfo.gov/app/details/GOVPUB-C13-ba43579ec72306f00c01305771ffdf3b)
 
 ### 4.5 Software Reflexion Models
 

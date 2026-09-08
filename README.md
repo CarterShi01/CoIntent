@@ -120,9 +120,10 @@ The scanner reads tracked Git files and metadata; it does not modify the target 
 
 ## Agent interface
 
-MCP is the only model-mutation interface. Its capability graph exposes three workflow Skills and their typed Tools:
+MCP is the only model-mutation interface. Its capability graph exposes four workflow Skills and their typed Tools:
 
 - `converge-design` preserves relevant human wording, inspects the accepted model, and stages a semantic proposal;
+- `review-role-model` applies the selective goal, role, responsibility, contract, and evidence review method;
 - `map-implementation` interprets repository facts as many-to-many evidence without copying the file tree into the Role Model;
 - `review-implementation-change` classifies a detected delta before resolving it or proposing a design evolution.
 
@@ -139,7 +140,7 @@ npm --prefix web run build
 
 ## Documentation
 
-The conceptual method and product boundaries are in [docs/design.md](docs/design.md). The implemented architecture, data lifecycle, interfaces, experiment result, and deployment procedure are in [docs/mvp.md](docs/mvp.md).
+The conceptual product boundaries are in [docs/design.md](docs/design.md), the selective operating method is in [docs/method.md](docs/method.md), and the implemented architecture, data lifecycle, interfaces, experiment result, and deployment procedure are in [docs/mvp.md](docs/mvp.md). Use [docs/review.md](docs/review.md) for the live agent-to-human review walkthrough.
 
 ## Framework dependency
 

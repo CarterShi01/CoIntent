@@ -93,3 +93,29 @@ export interface Finding {
   artifact_paths: string[];
   status: string;
 }
+
+export interface SemanticChange {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+export interface Proposal {
+  id: string;
+  project_id: string;
+  base_version: number;
+  rationale: string;
+  actor: string;
+  status: string;
+  created_at: string;
+  evidence_ids: string[];
+  diff: {
+    goals: SemanticChange;
+    roles: SemanticChange;
+    responsibilities: SemanticChange;
+    relations: SemanticChange;
+    trace_links: SemanticChange;
+    summary_changed: boolean;
+    status_changed: boolean;
+  };
+}
