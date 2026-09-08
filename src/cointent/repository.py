@@ -781,6 +781,7 @@ class CoIntentRepository:
         with self.connection() as db:
             projects = db.execute("SELECT * FROM projects").fetchall()
             versions = db.execute("SELECT project_id,version,model_json FROM model_versions").fetchall()
+            snapshots = db.execute("SELECT snapshot_json FROM snapshots").fetchall()
         for row in projects:
             target = self._project_dir(row["id"]) / "project.json"
             if not target.exists():
@@ -790,6 +791,11 @@ class CoIntentRepository:
             if not target.exists():
                 model = ProjectModel.model_validate_json(row["model_json"])
                 _atomic_json(target, model.model_dump())
+        for row in snapshots:
+            snapshot = RepositorySnapshot.model_validate_json(row["snapshot_json"])
+            target = self._project_dir(snapshot.project_id) / "snapshots" / f"{snapshot.id}.json"
+            if not target.exists():
+                _atomic_json(target, snapshot.model_dump())
 
     def _project_dir(self, project_id: str) -> Path:
         candidate = Path(project_id)

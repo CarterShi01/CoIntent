@@ -24,7 +24,7 @@ Exit check: both legacy fixtures and native 0.2 models validate and semantic dif
 2. Retain immutable `model_versions` and content-addressed `snapshots`.
 3. Add `mapping_revisions` and `change_sets` tables with project indexes.
 4. Atomically project project metadata, accepted designs, and snapshots to JSON.
-5. Backfill missing JSON projections at process startup.
+5. Backfill missing project, design-version, and code-snapshot JSON projections at process startup.
 6. Expose project inspection and updates, accepted design history, latest baseline, and code snapshot history separately.
 
 Exit check: restart preserves data, old databases migrate without destructive SQL, JSON assets reconstruct from stored versions, and stale proposal acceptance fails.

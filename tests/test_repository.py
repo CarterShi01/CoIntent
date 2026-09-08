@@ -81,6 +81,11 @@ def test_reingesting_identical_snapshot_is_idempotent(tmp_path: Path) -> None:
     assert len(repo.list_snapshots("demo")) == 1
     assert repo.overview("demo")["latest_snapshot"]["artifact_count"] == 1
     assert "artifacts" not in repo.overview("demo")["latest_snapshot"]
+    snapshot_asset = tmp_path / "projects/demo/snapshots/snapshot-one.json"
+    assert snapshot_asset.is_file()
+    snapshot_asset.unlink()
+    CoIntentRepository(tmp_path / "cointent.db")
+    assert snapshot_asset.is_file()
 
 
 def test_project_versions_json_assets_and_change_set(tmp_path: Path) -> None:
