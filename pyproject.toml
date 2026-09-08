@@ -1,3 +1,7 @@
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
+
 [project]
 name = "cointent"
 version = "0.1.0"
@@ -5,8 +9,24 @@ description = "Software design convergence and implementation alignment for huma
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "contexture-mcp @ git+https://github.com/CarterShi01/contexture-mcp.git@bf4e0c3fbdbf5162d08406382f60f88aece4fc30",
+  "contexture-mcp @ git+https://github.com/CarterShi01/contexture-mcp.git@a108b314bb3f37622fb082759f726468bbb09163",
+  "pydantic>=2.12,<3",
+  "starlette>=1.0,<2",
+  "uvicorn>=0.40,<1",
 ]
 
-[tool.uv]
-package = false
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8,<10",
+]
+
+[project.scripts]
+cointent = "cointent.cli:main"
+
+[tool.uv.build-backend]
+module-name = "cointent"
+module-root = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -468,7 +468,7 @@ Names and grouping remain provisional until the domain operations are tested. Mu
 
 ### 10.3 Version policy
 
-At this baseline, the latest upstream Contexture source declares version `0.13.0` but has no corresponding stable tag or PyPI release. CoIntent therefore pins the exact upstream Git commit in `pyproject.toml` for reproducibility. Once Contexture publishes a stable `0.13.x` release, the dependency should move to a compatible release constraint and a lockfile should continue to capture the selected artifact.
+At this MVP baseline, the latest upstream Contexture source declares version `0.14.0` but has no corresponding stable tag or PyPI release. CoIntent therefore pins the exact upstream Git commit in `pyproject.toml` for reproducibility. Once Contexture publishes a stable `0.14.x` release, the dependency should move to a compatible release constraint and a lockfile should continue to capture the selected artifact.
 
 ## 11. Proposed logical architecture
 

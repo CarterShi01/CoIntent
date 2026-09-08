@@ -1,0 +1,13 @@
+.git
+.venv
+.pytest_cache
+.playwright-cli
+output
+runtime
+seed
+web/node_modules
+web/dist
+web-dist
+*.db
+*.db-shm
+*.db-wal

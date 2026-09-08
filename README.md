@@ -4,7 +4,7 @@
 
 CoIntent is a software design convergence and implementation alignment system for humans and agents. Through continuous dialogue, it progressively turns a fuzzy idea into a versioned graph of goals, responsibilities, and roles, then uses semantic mappings to detect drift between that model and the code that implements it.
 
-> CoIntent is in its initial design stage. This repository currently defines the product vision, conceptual model, and proposed development direction.
+> The repository now contains a working vertical MVP: a Contexture-powered MCP server, a versioned SQLite model store, a read-only incremental Git scanner, explicit read REST routes, and a synchronized Role Book / Role Topology web interface.
 
 ## Why CoIntent?
 
@@ -93,16 +93,58 @@ CoIntent is not intended to be:
 - a code generator with diagrams attached;
 - a system where inferred code structure automatically becomes design truth.
 
-## Design documentation
+## MVP quick start
 
-The initial design proposal is available in [docs/design.md](docs/design.md). It covers the conceptual model, design-convergence workflow, implementation mapping, alignment analysis, agent interface, and proposed MVP scope.
+Prerequisites: Git, Python 3.11+, [uv](https://docs.astral.sh/uv/), and Node.js 24+.
+
+```bash
+uv sync --extra dev
+npm --prefix web install
+
+# Build the first intended model and observed snapshot from a local repository.
+uv run cointent scan /path/to/idea-factory \
+  --project-id idea-factory \
+  --name "Idea Factory" \
+  --seed-idea-factory
+
+# Terminal 1: Contexture MCP + read-only REST API
+uv run cointent serve
+
+# Terminal 2: Role Book + Role Topology
+npm --prefix web run dev
+```
+
+Open `http://127.0.0.1:5175`. The HTTP service listens on `127.0.0.1:8811`. For a local stdio agent connection, run `uv run cointent mcp`.
+
+The scanner reads tracked Git files and metadata; it does not modify the target repository. Re-running the scan stores a content-addressed snapshot, compares it with the previous snapshot, and creates review findings only for changed evidence that touches a mapped role or crosses mapped role boundaries. Add `--include-untracked` only when uncommitted, untracked files are intentionally part of the evidence.
+
+## Agent interface
+
+MCP is the only model-mutation interface. Its capability graph exposes three workflow Skills and their typed Tools:
+
+- `converge-design` preserves relevant human wording, inspects the accepted model, and stages a semantic proposal;
+- `map-implementation` interprets repository facts as many-to-many evidence without copying the file tree into the Role Model;
+- `review-implementation-change` classifies a detected delta before resolving it or proposing a design evolution.
+
+Accepted intent and observed code are stored separately. A proposal names the exact model version it was based on; acceptance creates a new immutable version, and stale proposals cannot silently overwrite newer intent.
+
+## Verification
+
+```bash
+uv run --extra dev pytest
+npm --prefix web run build
+```
+
+## Documentation
+
+The conceptual method and product boundaries are in [docs/design.md](docs/design.md). The implemented architecture, data lifecycle, interfaces, experiment result, and deployment procedure are in [docs/mvp.md](docs/mvp.md).
 
 ## Framework dependency
 
-The initial project metadata pins Contexture `0.13.0` to the exact latest upstream commit available when this baseline was created. This temporary Git pin provides reproducible builds until a corresponding stable Contexture release is published.
+The project metadata pins Contexture `0.14.0` to the exact latest upstream commit available when this MVP was completed. This temporary Git pin provides reproducible builds until a corresponding stable Contexture release is published.
 
 ## Project status
 
-CoIntent is at the **design baseline** stage. Terminology, model boundaries, and initial interfaces are expected to evolve through implementation experiments.
+CoIntent is at **MVP 0.1**. It proves the full storage and interaction skeleton with Idea Factory as a read-only experiment. Semantic role inference is deliberately human/agent-reviewed; the deterministic scanner produces implementation facts, not design truth.
 
 Contributions, critiques, and relevant prior art are welcome.

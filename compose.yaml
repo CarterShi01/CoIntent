@@ -1,0 +1,38 @@
+name: cointent
+
+services:
+  backend:
+    image: cointent-backend:${COINTENT_RELEASE:-local}
+    build:
+      context: .
+      dockerfile: deploy/backend.Dockerfile
+    container_name: cointent-backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      COINTENT_DB_PATH: /data/cointent.db
+      COINTENT_PUBLIC_ORIGIN: ${COINTENT_PUBLIC_ORIGIN:-http://127.0.0.1:8811}
+      COINTENT_MCP_TOKEN: ${COINTENT_MCP_TOKEN:?set COINTENT_MCP_TOKEN in .env}
+    volumes:
+      - ./runtime:/data
+      - ./seed:/seed:ro
+    ports:
+      - 127.0.0.1:${COINTENT_PORT:-8811}:8811
+    command: ["serve", "--host", "0.0.0.0", "--port", "8811"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8811/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  web:
+    profiles: ["build"]
+    image: cointent-web:${COINTENT_RELEASE:-local}
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    volumes:
+      - ./web-dist:/out
