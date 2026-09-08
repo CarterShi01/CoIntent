@@ -8,7 +8,7 @@ from typing import Any
 
 from contexture import Channels, Contexture, Role, Skill, Tool, current_principal
 
-from .models import ModelPatch, ProjectModel
+from .models import ModelPatch, ProjectModel, TraceLink
 from .repository import CoIntentRepository
 from .scanner import RepositorySnapshot
 
@@ -288,6 +288,28 @@ class CompareCodeSnapshots(Tool):
         return _repository(self).compare_snapshots(project_id, from_snapshot_id, to_snapshot_id)
 
 
+class ListMappingRevisions(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="list-mapping-revisions", description="List explicit DesignVersion-to-CodeSnapshot mapping revisions.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory", limit: int = 20) -> dict[str, Any]:
+        return {"mapping_revisions": _repository(self).list_mapping_revisions(project_id, limit)}
+
+
+class RecordMappingRevision(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="record-mapping-revision", description="Confirm the TraceLinks used to align one accepted design with one code snapshot.", read_only=False)
+
+    async def invoke(
+        self, project_id: str, design_version: int | None = None,
+        snapshot_id: str | None = None, trace_links: list[TraceLink] | None = None,
+    ) -> dict[str, Any]:
+        return _repository(self).record_mapping_revision(
+            project_id, design_version, snapshot_id,
+            None if trace_links is None else [item.model_dump() for item in trace_links],
+        )
+
+
 class FindArtifactRoleLinks(Tool):
     def __init__(self) -> None:
         super().__init__(name="find-artifact-role-links", description="Trace implementation paths back to RoleObjects.", read_only=True)
@@ -468,7 +490,7 @@ class ResponsibilityDesign(Role):
 
 class ImplementationAlignment(Role):
     def __init__(self) -> None:
-        super().__init__(name="implementation-alignment", description="Compare observed code with accepted responsibility design.", instructions="Keep repository facts, semantic mappings, and accepted design separate. Findings require review before action.", skills=[MapImplementation()], tools=[IngestCodeSnapshot(), ListCodeSnapshots(), CompareCodeSnapshots(), FindArtifactRoleLinks(), CompareDesignToCode(), ListAlignmentFindings(), ResolveAlignmentFinding()])
+        super().__init__(name="implementation-alignment", description="Compare observed code with accepted responsibility design.", instructions="Keep repository facts, semantic mappings, and accepted design separate. Findings require review before action.", skills=[MapImplementation()], tools=[IngestCodeSnapshot(), ListCodeSnapshots(), CompareCodeSnapshots(), ListMappingRevisions(), RecordMappingRevision(), FindArtifactRoleLinks(), CompareDesignToCode(), ListAlignmentFindings(), ResolveAlignmentFinding()])
 
 
 class ChangeLifecycle(Role):

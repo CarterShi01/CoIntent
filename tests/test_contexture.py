@@ -16,6 +16,7 @@ def test_contexture_graph_exposes_v02_agent_capabilities(tmp_path, monkeypatch) 
         "cointent/product-design/inspect-product-function",
         "cointent/responsibility-design/inspect-role-object",
         "cointent/implementation-alignment/ingest-code-snapshot",
+        "cointent/implementation-alignment/record-mapping-revision",
         "cointent/implementation-alignment/compare-design-to-code",
         "cointent/change-lifecycle/generate-implementation-brief",
         "cointent/history-and-portability/export-design-version",

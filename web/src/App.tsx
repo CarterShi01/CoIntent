@@ -89,7 +89,7 @@ function App() {
           </select></label>
           <div className="alignment-knot" title="Design-to-code alignment coordinate">↔</div>
           <div className="coordinate"><span>Code</span><strong>{latestSnapshot?.revision.slice(0, 8) ?? "No snapshot"}</strong></div>
-          <div className="coordinate"><span>Mapping</span><strong>{baseline.mapping_revision?.id.replace("mapping-", "") ?? "None"}</strong></div>
+          <div className={`coordinate ${baseline.is_current ? "" : "stale-coordinate"}`}><span>Mapping</span><strong>{baseline.mapping_revision ? `${baseline.mapping_revision.id.replace("mapping-", "")} · ${baseline.is_current ? "current" : "stale"}` : "None"}</strong></div>
           <div className={`review-count ${overview.counts.open_findings ? "attention" : ""}`}><span>Review</span><strong>{overview.counts.open_findings + overview.counts.pending_proposals}</strong></div>
         </div>
         <button className="session-button" onClick={() => void logout().finally(() => { setWorkspace(null); setAuth({ state: "out" }); })}>

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import ModelPatch, ProjectModel, apply_model_patch, semantic_diff
+from .models import ModelPatch, ProjectModel, TraceLink, apply_model_patch, semantic_diff
 from .scanner import RepositorySnapshot, snapshot_diff
 
 
@@ -602,14 +602,68 @@ class CoIntentRepository:
             mapping = db.execute(
                 "SELECT * FROM mapping_revisions WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (project_id,)
             ).fetchone()
+        mapping_item = None if mapping is None else _mapping_revision(mapping)
+        latest_snapshot_id = snapshots[0]["id"] if snapshots else None
         return {
             "project_id": project_id, "design_version": current["version"],
             "code_snapshot": snapshots[0] if snapshots else None,
-            "mapping_revision": None if mapping is None else {
-                **{key: mapping[key] for key in ("id", "design_version", "snapshot_id", "created_at")},
-                "trace_links": json.loads(mapping["trace_links_json"]),
-            },
+            "mapping_revision": mapping_item,
+            "is_current": bool(mapping_item and mapping_item["design_version"] == current["version"]
+                               and mapping_item["snapshot_id"] == latest_snapshot_id),
         }
+
+    def record_mapping_revision(
+        self, project_id: str, design_version: int | None = None,
+        snapshot_id: str | None = None, trace_links: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        design = self.get_model(project_id, design_version)
+        snapshots = self.list_snapshots(project_id, 1)
+        selected_snapshot = snapshot_id or (snapshots[0]["id"] if snapshots else None)
+        if selected_snapshot is None:
+            raise ValueError("a code snapshot is required before recording a mapping revision")
+        snapshot = self.get_snapshot(selected_snapshot)
+        if snapshot["project_id"] != project_id:
+            raise ValueError("snapshot does not belong to project")
+        model = ProjectModel.model_validate(design["model"])
+        selected_links = trace_links if trace_links is not None else design["model"]["trace_links"]
+        validated_links = [TraceLink.model_validate(item) for item in selected_links]
+        candidate = model.model_copy(update={"trace_links": validated_links})
+        ProjectModel.model_validate(candidate.model_dump())
+        encoded = json.dumps([item.model_dump() for item in validated_links], separators=(",", ":"), sort_keys=True)
+        with self.connection() as db:
+            existing = db.execute(
+                """SELECT * FROM mapping_revisions WHERE project_id=? AND design_version=?
+                   AND snapshot_id=? AND trace_links_json=? ORDER BY created_at DESC LIMIT 1""",
+                (project_id, design["version"], selected_snapshot, encoded),
+            ).fetchone()
+            if existing is not None:
+                return {**_mapping_revision(existing), "duplicate": True}
+            item = {
+                "id": _id("mapping"), "project_id": project_id,
+                "design_version": design["version"], "snapshot_id": selected_snapshot,
+                "trace_links_json": encoded, "created_at": _now(),
+            }
+            db.execute(
+                """INSERT INTO mapping_revisions(id,project_id,design_version,snapshot_id,trace_links_json,created_at)
+                   VALUES(:id,:project_id,:design_version,:snapshot_id,:trace_links_json,:created_at)""", item,
+            )
+        return {**self.get_mapping_revision(item["id"]), "duplicate": False}
+
+    def get_mapping_revision(self, mapping_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM mapping_revisions WHERE id=?", (mapping_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown mapping revision {mapping_id!r}")
+        return _mapping_revision(row)
+
+    def list_mapping_revisions(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT * FROM mapping_revisions WHERE project_id=?
+                   ORDER BY created_at DESC LIMIT ?""", (project_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [_mapping_revision(row) for row in rows]
 
     def start_change_set(
         self, project_id: str, title: str, description: str = "",
@@ -768,6 +822,12 @@ def _change_set(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["function_ids"] = json.loads(item.pop("function_ids_json"))
     item["role_ids"] = json.loads(item.pop("role_ids_json"))
+    return item
+
+
+def _mapping_revision(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["trace_links"] = json.loads(item.pop("trace_links_json"))
     return item
 
 

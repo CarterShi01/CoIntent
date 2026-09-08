@@ -40,6 +40,7 @@ button { color: inherit; }
 .coordinate-strip { min-width: 0; display: flex; align-items: stretch; justify-content: flex-end; }
 .coordinate { min-width: 110px; display: flex; flex-direction: column; justify-content: center; padding: 0 14px; border-right: 1px solid var(--line); }
 .coordinate strong { max-width: 110px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; font: 10px "IBM Plex Mono", monospace; white-space: nowrap; }
+.stale-coordinate { background: #fff5e5; color: #9a6209; }
 .design-coordinate { min-width: 180px; background: var(--blue-soft); border-left: 3px solid var(--blue); }
 .design-coordinate select { margin-top: 4px; color: #2447cb; font: 10px "IBM Plex Mono", monospace; }
 .alignment-knot { align-self: center; margin: 0 -11px; z-index: 2; width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid #aebbed; border-radius: 50%; background: white; color: var(--blue); font-size: 11px; box-shadow: 0 2px 7px rgba(49,92,255,.14); }

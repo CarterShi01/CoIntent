@@ -68,6 +68,8 @@ Quality rules are diagnostic prompts, not automatic verdicts. A structural check
 
 `MappingRevision` records which `TraceLinks` were compared for one `(DesignVersion, CodeSnapshot)` pair. A new snapshot does not create a new design version.
 
+The current alignment coordinate is valid only when the latest MappingRevision names both the selected accepted DesignVersion and latest CodeSnapshot. Accepting a design therefore makes the mapping visibly stale until an Agent explicitly records a reviewed MappingRevision.
+
 `AlignmentFinding` records an observed convergence problem or uncertainty. Resolution does not rewrite history.
 
 ### 4.2 Product design

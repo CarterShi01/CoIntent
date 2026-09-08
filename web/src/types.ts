@@ -143,6 +143,7 @@ export interface AlignmentBaseline {
     created_at: string;
     trace_links: TraceLink[];
   };
+  is_current: boolean;
 }
 
 export interface Finding {

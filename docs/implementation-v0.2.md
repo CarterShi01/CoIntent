@@ -62,7 +62,7 @@ Implement the following progressively disclosed Tools.
 | `project-management` | health, list/inspect project, overview, list design versions, inspect alignment baseline | create project, update project settings |
 | `product-design` | inspect design/function tree/function/proposals, list intent, assess catalog, analyze impact | record intent, propose patch, resolve proposal |
 | `responsibility-design` | inspect RoleObject forest/object, assess Role quality | changes use the shared typed design proposal |
-| `implementation-alignment` | list/compare snapshots, find artifact links, compare design to code, list findings | ingest snapshot, resolve finding |
+| `implementation-alignment` | list/compare snapshots and mapping revisions, find artifact links, compare design to code, list findings | ingest snapshot, record mapping revision, resolve finding |
 | `change-lifecycle` | list/inspect ChangeSets, generate implementation brief | start/update ChangeSet |
 | `history-and-portability` | compare design versions, export design bundle | none |
 

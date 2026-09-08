@@ -61,6 +61,14 @@ def test_incremental_snapshot_creates_mapped_change_finding(tmp_path: Path) -> N
     baseline = repo.alignment_baseline("demo")
     assert baseline["mapping_revision"]["snapshot_id"] == "snapshot-two"
     assert baseline["mapping_revision"]["design_version"] == 2
+    assert baseline["is_current"] is True
+
+    repo.replace_model("demo", model, actor="agent", message="new design")
+    assert repo.alignment_baseline("demo")["is_current"] is False
+    mapping = repo.record_mapping_revision("demo")
+    assert mapping["design_version"] == 3
+    assert repo.alignment_baseline("demo")["is_current"] is True
+    assert repo.record_mapping_revision("demo")["duplicate"] is True
 
 
 def test_reingesting_identical_snapshot_is_idempotent(tmp_path: Path) -> None:
