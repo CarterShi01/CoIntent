@@ -115,6 +115,7 @@ export interface Proposal {
     responsibilities: SemanticChange;
     relations: SemanticChange;
     trace_links: SemanticChange;
+    name_changed: boolean;
     summary_changed: boolean;
     status_changed: boolean;
   };

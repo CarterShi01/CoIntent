@@ -4,6 +4,7 @@ from cointent.models import Goal, ModelPatch, ProjectModel, RoleRecord, apply_mo
 def test_patch_produces_valid_semantic_diff() -> None:
     before = ProjectModel(project_id="demo", name="Demo")
     patch = ModelPatch(
+        name="演示项目",
         status="baseline",
         upsert_goals=[Goal(id="goal.ship", title="Ship")],
         upsert_roles=[RoleRecord(id="role.delivery", name="Delivery", purpose="Own delivery")],
@@ -12,6 +13,8 @@ def test_patch_produces_valid_semantic_diff() -> None:
     diff = semantic_diff(before, after)
 
     assert after.status == "baseline"
+    assert after.name == "演示项目"
     assert diff["goals"]["added"] == ["goal.ship"]
     assert diff["roles"]["added"] == ["role.delivery"]
     assert diff["status_changed"] is True
+    assert diff["name_changed"] is True

@@ -261,7 +261,7 @@ function ProposalCard({ proposal }: { proposal: Proposal }) {
   return <article className="proposal-card">
     <div><span>待审提案</span><code>{proposal.id}</code></div>
     <strong>{proposal.rationale}</strong>
-    <p>{changes.join(" · ") || "仅修改模型摘要或状态"}</p>
+    <p>{changes.join(" · ") || "仅修改项目名称、模型摘要或状态"}</p>
     <small>基于 v{proposal.base_version} · 请在 Agent 中明确接受或拒绝</small>
   </article>;
 }

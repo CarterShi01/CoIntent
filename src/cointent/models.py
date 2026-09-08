@@ -106,6 +106,7 @@ class ProjectModel(ModelRecord):
 
 
 class ModelPatch(ModelRecord):
+    name: str | None = None
     summary: str | None = None
     status: Literal["draft", "baseline"] | None = None
     upsert_goals: list[Goal] = Field(default_factory=list)
@@ -122,6 +123,8 @@ class ModelPatch(ModelRecord):
 
 def apply_model_patch(model: ProjectModel, patch: ModelPatch) -> ProjectModel:
     data = model.model_dump()
+    if patch.name is not None:
+        data["name"] = patch.name
     if patch.summary is not None:
         data["summary"] = patch.summary
     if patch.status is not None:
@@ -150,6 +153,7 @@ def semantic_diff(before: ProjectModel, after: ProjectModel) -> dict[str, Any]:
             "removed": sorted(left.keys() - right.keys()),
             "changed": sorted(key for key in left.keys() & right.keys() if left[key] != right[key]),
         }
+    result["name_changed"] = before.name != after.name
     result["summary_changed"] = before.summary != after.summary
     result["status_changed"] = before.status != after.status
     return result
