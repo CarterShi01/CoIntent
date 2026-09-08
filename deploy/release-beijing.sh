@@ -29,6 +29,25 @@ npm --prefix web run build
 
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$fixture_dir"' EXIT
+contexture_commit="$(sed -n 's/.*contexture-mcp\.git@\([0-9a-f]\{40\}\).*/\1/p' pyproject.toml)"
+[ -n "$contexture_commit" ] || die "cannot resolve the pinned Contexture commit"
+contexture_checkout=""
+while IFS= read -r candidate; do
+  if [ "$(git -C "$candidate" rev-parse HEAD 2>/dev/null || true)" = "$contexture_commit" ]; then
+    contexture_checkout="$candidate"
+    break
+  fi
+done < <(find "$(uv cache dir)/git-v0/checkouts" -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
+if [ -z "$contexture_checkout" ]; then
+  contexture_checkout="$fixture_dir/contexture"
+  git init -q "$contexture_checkout"
+  git -C "$contexture_checkout" remote add origin https://github.com/CarterShi01/contexture-mcp.git
+  git -C "$contexture_checkout" fetch --depth 1 origin "$contexture_commit"
+  git -C "$contexture_checkout" checkout -q --detach FETCH_HEAD
+fi
+mkdir -p "$fixture_dir/vendor"
+uv build --wheel --out-dir "$fixture_dir/vendor" "$contexture_checkout"
+
 log "capture read-only Idea Factory evidence"
 uv run cointent --database "$fixture_dir/cointent.db" scan "$EXPERIMENT_REPOSITORY" \
   --project-id idea-factory --name "Idea Factory" --seed-idea-factory \
@@ -48,6 +67,9 @@ rsync -az --delete \
   "$ROOT/" "$BEIJING_HOST:$REMOTE_APP_DIR/"
 rsync -az -e "ssh -o BatchMode=yes -o ConnectTimeout=8" \
   "$fixture_dir/snapshot.json" "$fixture_dir/model.json" "$BEIJING_HOST:$REMOTE_APP_DIR/seed/"
+ssh -o BatchMode=yes -o ConnectTimeout=8 "$BEIJING_HOST" "mkdir -p '$REMOTE_APP_DIR/vendor'"
+rsync -az --delete -e "ssh -o BatchMode=yes -o ConnectTimeout=8" \
+  "$fixture_dir/vendor/" "$BEIJING_HOST:$REMOTE_APP_DIR/vendor/"
 
 log "activate on Beijing"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "$BEIJING_HOST" \

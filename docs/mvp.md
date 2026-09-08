@@ -193,6 +193,7 @@ npm --prefix web run build
 The deployment follows the established One Creator pattern:
 
 - build the Vite client in a pinned Node container;
+- build a wheel from the exact Contexture Git commit in `pyproject.toml` and ship it with the release, so the Beijing build does not depend on GitHub connectivity;
 - export static files and publish them to `/var/www/cointent` for the existing host Nginx;
 - run only the Python service in Docker, bound to `127.0.0.1:8811`;
 - scan Idea Factory locally and transfer only portable snapshot/model fixtures;
