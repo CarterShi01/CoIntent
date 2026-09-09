@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .models import ImplementationLink, ModelPatch, ProjectModel, apply_model_patch, semantic_diff
-from .scanner import RepositorySnapshot, snapshot_diff
+from .scanner import RepositorySnapshot, is_backend_logic_candidate, snapshot_diff
 
 
 def _now() -> str:
@@ -538,7 +538,9 @@ class CoIntentRepository:
                 link.responsibility_id for link in model.implementation_links
                 if _path_matches(link.artifact_path, path)
             })
-            if not responsibility_ids and change == "added" and not _semantic_backend_source(path):
+            if not is_backend_logic_candidate(path):
+                continue
+            if not responsibility_ids and change == "removed":
                 continue
             if change == "removed" and responsibility_ids:
                 kind, severity = "Absent", "high"
@@ -554,6 +556,28 @@ class CoIntentRepository:
                 {"change": change, "snapshot": snapshot.id},
             ))
         return created
+
+    def dismiss_non_backend_findings(self, project_id: str) -> int:
+        """Dismiss legacy findings that fall outside the backend-only observation boundary."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT id,artifact_paths_json FROM alignment_findings WHERE project_id=? AND status='open'",
+                (project_id,),
+            ).fetchall()
+            identifiers = [
+                row["id"] for row in rows
+                if (paths := json.loads(row["artifact_paths_json"]))
+                and all(not is_backend_logic_candidate(path) for path in paths)
+            ]
+            if identifiers:
+                placeholders = ",".join("?" for _ in identifiers)
+                db.execute(
+                    f"""UPDATE alignment_findings SET status='dismissed',
+                        resolution='Outside the CoIntent 0.3 backend-logic observation boundary',resolved_at=?
+                        WHERE id IN ({placeholders})""",
+                    (_now(), *identifiers),
+                )
+        return len(identifiers)
 
     def _insert_finding(
         self, project_id: str, snapshot_id: str, kind: str, severity: str, summary: str,
@@ -958,10 +982,3 @@ def _atomic_json(path: Path, data: Any) -> None:
 def _path_matches(mapping: str, path: str) -> bool:
     prefix = mapping.rstrip("/")
     return path == prefix or path.startswith(f"{prefix}/")
-
-
-def _semantic_backend_source(path: str) -> bool:
-    lowered = path.lower()
-    if any(value in lowered for value in ("logging", "logger", "telemetry", "metrics", "tracing", "monitoring")):
-        return False
-    return Path(path).suffix.lower() in {".py", ".go", ".rs", ".java", ".kt", ".rb", ".php"}

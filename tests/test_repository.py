@@ -74,6 +74,35 @@ def test_incremental_snapshot_creates_mapped_change_finding(tmp_path: Path) -> N
     assert repo.record_mapping_revision("demo")["duplicate"] is True
 
 
+def test_frontend_removal_never_becomes_a_responsibility_finding(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.create_project("demo", "Demo")
+    model = ProjectModel(
+        project_id="demo", name="Demo",
+        responsibilities=[Responsibility(id="responsibility.presentation", name="Present result")],
+        implementation_links=[ImplementationLink(
+            id="implementation.presentation", responsibility_id="responsibility.presentation",
+            artifact_path="studio/web/src/App.tsx",
+        )],
+    )
+    repo.replace_model("demo", model, actor="agent", message="legacy mapping")
+    first = RepositorySnapshot(
+        id="snapshot-frontend", project_id="demo", repository="demo", revision="one",
+        branch="main", dirty=False, captured_at="2026-01-01T00:00:00+00:00",
+        artifacts=[Artifact(path="studio/web/src/App.tsx", kind="source", language="TypeScript",
+                            component="studio/web", sha256="aaa", size=3)],
+    )
+    second = RepositorySnapshot(
+        id="snapshot-filtered", project_id="demo", repository="demo", revision="two",
+        branch="main", dirty=False, captured_at="2026-01-02T00:00:00+00:00",
+    )
+
+    repo.ingest_snapshot("demo", first.model_dump())
+    result = repo.ingest_snapshot("demo", second.model_dump())
+    assert result["diff"]["removed"] == ["studio/web/src/App.tsx"]
+    assert result["findings_created"] == []
+
+
 def test_json_assets_change_set_and_implementation_brief(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     repo.create_project("demo", "Demo", "https://example.test/demo")

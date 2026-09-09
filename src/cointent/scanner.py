@@ -162,6 +162,21 @@ def _ignored(path: str) -> bool:
     return any(segment in normalized for segment in TECHNICAL_NOISE_SEGMENTS)
 
 
+def is_backend_logic_candidate(path: str) -> bool:
+    """Return whether a changed path can carry product-relevant backend logic."""
+    normalized = "/" + path.replace("\\", "/").lower()
+    relative = normalized.removeprefix("/")
+    if Path(relative).suffix.lower() not in {".py", ".go", ".rs", ".java", ".kt", ".rb", ".php"}:
+        return False
+    if any(relative.startswith(prefix) for prefix in (
+        "web/", "frontend/", "studio/", "ui/", "client/", "public/", "assets/",
+    )):
+        return False
+    if any(segment in normalized for segment in FRONTEND_SEGMENTS):
+        return False
+    return not any(segment in normalized for segment in TECHNICAL_NOISE_SEGMENTS)
+
+
 def _language(path: str) -> str:
     suffix = Path(path).suffix.lower()
     return {

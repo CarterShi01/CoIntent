@@ -108,4 +108,5 @@ def _import_fixture(args: argparse.Namespace) -> None:
             or repository.stored_schema_version(model.project_id) != model.schema_version):
         repository.replace_model(model.project_id, model, actor="agent:fixture", message="Import experiment baseline")
     repository.record_mapping_revision(model.project_id, snapshot_id=snapshot.id)
+    repository.dismiss_non_backend_findings(model.project_id)
     print(json.dumps(repository.overview(model.project_id), indent=2))
