@@ -88,6 +88,22 @@ The intended production runner:
 
 The browser and conversational Agent may request a scan job later, but neither can upload replacement graph content or call a graph-upsert API.
 
+Analysis is on demand. It starts only when a user asks to understand the current system or starts a
+structure-first design session. Coding completion does not schedule a scan. The next understanding or design
+request performs the refresh.
+
+The runner must preserve the complete `.ua` state needed by the pinned tool, not just the two JSON files that
+CoIntent imports. Its execution policy is:
+
+- unchanged repository fingerprint: skip `/understand` and `/understand-domain` and reuse the current observation;
+- first run, explicit operator recovery, or missing/invalid UA state: run `/understand --full`;
+- changed repository with valid previous UA state: run plain `/understand` so UA selects its incremental path;
+- after a changed knowledge graph: a full `/understand-domain` pass is acceptable in 0.4.
+
+A full-repository `CodeSnapshot` is a reproducibility manifest and does not imply full UA recomputation. Every
+refresh result declares `unchanged`, `incremental`, or `full`, plus changed-file and analyzer-impact counts. A
+fallback to full analysis must be visible rather than silent.
+
 ## Consequences
 
 Positive:
@@ -128,4 +144,8 @@ Before enabling a project by default, run the pinned UA version against Idea Fac
 - evidence-free domain branches are visible in diagnostics but absent from observed truth;
 - the initial two-level view loads without reading source files at request time;
 - a selected Step can navigate back to exact source lines;
+- an unchanged second refresh runs neither UA command and consumes no analysis tokens;
+- changing one fixture file with valid UA state selects incremental `/understand` and reports the impacted files;
+- missing or invalid UA state causes a declared full fallback;
+- coding completion alone schedules no refresh;
 - no observed graph mutation operation is exposed to browser or Agent clients.

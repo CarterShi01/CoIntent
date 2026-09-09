@@ -1,9 +1,14 @@
 # CoIntent 0.4 Detailed Design: Understand the Present, Design the Future
 
-**Status:** accepted for incremental implementation  
-**Scope:** product model, backend boundaries, Understand Anything integration, recursive projection, two-tab workspace, review and implementation export  
+**Status:** accepted core model; on-demand experience revision accepted
+**Scope:** product model, backend boundaries, incremental Understand Anything integration, recursive projection, two-tab workspace, target diff and implementation context
 **Supersedes:** the parts of 0.3 that treat one accepted Responsibility model as both observed system truth and desired design  
 **Implementation authority:** approved as the incremental implementation baseline
+
+> **Normative product-flow revision:** [On-demand product flow and MCP surface](on-demand-product-flow.md)
+> governs when analysis runs, how much graph an Agent reads, the compact public Role graph, and the optional
+> nature of later design-versus-implementation comparison. Earlier lifecycle detail below remains useful as
+> domain and audit design, but must not be interpreted as an always-on or automatically advancing workflow.
 
 ## 1. Executive decision
 
@@ -25,11 +30,16 @@ DESIGN — what the system should become
 Human intent
   → ExpectedFeatureCatalog
   → TargetStructureGraph
-  → Human review and approval
-  → ImplementationChangeBundle
+  → Human review and semantic diff
+  → Implementation context
   → Coding Agent
   → changed Code
 ```
+
+CoIntent runs neither process continuously. Understanding begins when a user asks to refresh or inspect a
+project. Design begins only when a user explicitly wants to design structure before code, and it first refreshes
+the observed baseline. Coding completion ends the design interaction; it does not automatically scan, verify, or
+advance a convergence state. A later on-demand refresh may be compared with the historical drawing if requested.
 
 The product exposes these jobs as two top-level tabs with the same spatial grammar:
 
@@ -288,6 +298,10 @@ DesignRevision:
   created_at: ...
 ```
 
+The persisted status vocabulary supports audit and compatibility. The default user experience exposes only
+`draft`, `finalized for implementation`, and `historical`; review/export/verification records do not become
+separate top-level product stages.
+
 `DesignBaselineLink` records where target objects came from:
 
 - `unchanged_from`: semantic intent is inherited;
@@ -320,17 +334,20 @@ DesignOperation:
 
 Every operation creates a new immutable draft revision. Undo selects or creates another revision; it does not mutate history. Layout-only changes are stored in user presentation preferences and excluded from semantic diffs.
 
-Review has three modes:
+The drawing UI has three views inside Design future:
 
 - **Draft:** edit expected functions and target graph.
 - **Changes:** show target against baseline with added, removed, and changed semantics.
-- **Approval:** show affected functions, contract changes, unresolved questions, acceptance criteria, and export readiness.
+- **Finalize:** show affected functions, contract changes, unresolved questions, acceptance criteria, and the
+  implementation-context digest.
 
 Approval locks a DesignRevision. Further changes create a successor draft and invalidate the earlier approval for export.
 
-### 4.9 ImplementationChangeBundle
+### 4.9 Implementation context
 
-The export is not a source-code patch. It is a machine-readable semantic implementation contract plus a human-readable brief.
+The implementation context may be stored using the existing `ImplementationChangeBundle` contract. It is not
+a source-code patch. It is a machine-readable semantic constraint plus a human-readable brief, created only
+after the user explicitly confirms an exact drawing and diff digest.
 
 ```yaml
 ImplementationChangeBundle:
@@ -379,18 +396,20 @@ Export is blocked when:
 
 Likely code scopes are hints derived from baseline bindings. They are not commands to edit only those files; new desired behavior may require new artifacts.
 
-### 4.10 Post-implementation verification
+### 4.10 Optional later comparison
 
-Implementation does not convert a target graph into observed truth. After a coding Agent changes code:
+Implementation does not convert a target graph into observed truth. Coding completion also does not trigger a
+scan. When a user later asks to understand the project or starts another design, the ordinary on-demand refresh
+may publish a new current Observation. The user can then request a comparison:
 
 ```text
-new code
+later user request
+  → refresh new code
   → new CodeSnapshot
   → new UnderstandAnythingSnapshot
   → new ObservedModelRevision
-  → compare against approved DesignRevision
-  → VerificationReport
-  → human review
+  → optionally compare against historical DesignRevision
+  → read-only comparison report
 ```
 
 The report classifies target claims as:
@@ -401,7 +420,10 @@ The report classifies target claims as:
 - `uncertain` — evidence or semantic matching is insufficient;
 - `not_comparable` — UA coverage prevents a conclusion.
 
-Only a human can mark the workspace `converged`. The verifier may recommend that state but cannot close the loop automatically.
+The comparison never merges the drawing into observed truth and does not require graph equality. Structural
+divergence is expected because the drawing constrained design rather than prescribed exact implementation.
+Stale evidence prevents comparison; behavioral gaps and structural deviations remain explicit for human
+interpretation. The default product does not require a separate convergence state.
 
 ## 5. Two-tab frontend information architecture
 
@@ -616,6 +638,13 @@ Pinned Understand Anything ──→ knowledge-graph.json + domain-graph.json
 
 Each transition runs as an idempotent job. Job identity is a digest of its input coordinate, pinned UA revision or projector version, and configuration. Repeated requests return the existing successful result unless `force_rebuild` is used by an operator, not an ordinary conversation Agent.
 
+The pipeline is started only by `refresh-current-understanding`, normally because the user wants to understand
+the project or is about to start structural design. A full CodeSnapshot records the complete repository manifest,
+but repeat UA computation is incremental: unchanged code skips all UA work; a valid previous UA state runs plain
+`/understand`; only initial, corrupt-cache, explicit operator, or upstream `FULL_UPDATE` conditions use
+`/understand --full`. When code changed, `/understand-domain` may recompute from the complete merged knowledge
+graph. Coding completion alone never starts this pipeline.
+
 ### 6.2 Storage
 
 For the first 0.4 implementation, retain SQLite transaction metadata and immutable JSON assets. Add metadata tables rather than immediately normalizing every graph node:
@@ -655,14 +684,11 @@ The existing `model_versions`, `proposals`, `mapping_revisions`, and `change_set
 
 Authority is enforced by capability boundaries, not Agent instructions alone:
 
-| Principal/capability | Code snapshot | UA snapshot | Observed graph | Design draft | Approval/export |
+| Principal/capability | Request refresh | Publish observation | Read one level | Revise design | Finalize implementation context |
 |---|---:|---:|---:|---:|---:|
-| browser human | request scan | read | read/request expansion/report issue | read/write | approve/export |
-| conversation Agent | request scan | read | read/request expansion/report issue | propose operations | no human approval |
-| scanner service | create | no | no | no | no |
-| UA import service | read | create | no | no | no |
-| projector service | read | read | create | no | no |
-| verifier service | read | read | read | read | create report only |
+| human MCP principal | yes | no API | yes | yes | yes |
+| Agent MCP principal | yes | no API | yes | scoped proposal | after explicit user instruction |
+| observation pipeline | execute | yes | read | no | no |
 
 There is no public or MCP tool named `upsert-observed-responsibility`, `replace-observed-model`, or `record-observed-mapping`. Expansion tools create jobs; only the projector can publish their result.
 
@@ -671,7 +697,7 @@ Repository methods are separated physically or by explicit interfaces:
 ```text
 ObservationRepository     # append/read generated facts
 DesignRepository          # create/read design revisions and operations
-ExportRepository          # approve/export/verify lifecycle
+ImplementationContextRepository  # finalized diff and optional comparison records
 ```
 
 The old generic `replace_model` must not be reachable in runtime product code after migration. Import and test fixtures may use a clearly named administrative migration path.
@@ -685,80 +711,63 @@ Freshness has independent coordinates:
 - projection freshness: was this graph produced from the selected UA snapshot using the active projector policy?
 - design baseline freshness: does this workspace still target the repository coordinate from which it was created?
 
-`Current` requires all first three answers to be yes. A graph can be valid and reproducible but stale. A design can be approved but require rebase before export.
+`Current` requires all first three answers to be yes. A graph can be valid and reproducible but stale. A design
+must be rebased before finalization when its baseline is no longer current.
 
 ### 6.5 Failure behavior
 
 - An incomplete or invalid UA output publishes no UA snapshot; diagnostics remain attached to the failed job.
 - Projector validation failure publishes no observed revision; the last successful graph remains visible as stale.
 - Expansion failure leaves its base observed revision untouched.
-- Design validation failure still saves the draft but blocks approval.
-- Export failure creates no partial bundle; asset creation is atomic.
-- Verification uncertainty never becomes convergence automatically.
+- Design validation failure still saves the draft but blocks finalization.
+- Implementation-context creation failure creates no partial bundle; asset creation is atomic.
+- Optional comparison uncertainty never mutates the historical design or current observation.
 
-## 7. HTTP and MCP surface
+## 7. MCP-only public surface
 
-Exact transport names may follow framework conventions, but the capability split is normative.
+MCP is the only target business transport for both the browser and conversational Agent. The public capability
+graph is deliberately smaller than the persisted aggregates. Exact contracts and Role instructions are
+normative in [the on-demand product-flow specification](on-demand-product-flow.md).
 
-### 7.1 Understand tools
+### 7.1 Project context
 
-Read:
+- `list-projects()`
+- `inspect-project-state(project_id)`
 
-- `inspect-observation-coordinate(project_id, observed_revision_id?)`
-- `list-observed-capabilities(...)`
-- `inspect-observed-responsibility(...)`
-- `trace-observed-workflow(...)`
-- `inspect-claim-evidence(subject_id, predicate?)`
-- `inspect-ua-graph-slice(ua_snapshot_id, node_ids, radius)`
-- `list-observed-revisions(project_id, code_snapshot_id?)`
-- `get-analysis-job(job_id)`
+### 7.2 Understand current
 
-Controlled requests:
+- `refresh-current-understanding(project_id)`
+- `inspect-understanding-refresh(job_id)`
+- `read-current-level(project_id, focus_id?, observed_revision_id?)`
 
-- `request-code-scan(project_id, repository_coordinate)`
-- `request-observation-expansion(project_id, observed_revision_id, node_id, depth=1)`
-- `report-observation-issue(observed_revision_id, subject_id, message)`
+The level response contains the same bounded function, structure, edge, evidence, and coordinate information
+visible on one web page. Passing a returned child as `focus_id` is the ordinary descent mechanism. No graph
+content is accepted from the caller.
 
-No graph content is accepted in controlled request bodies.
+### 7.3 Design future
 
-### 7.2 Design tools
+- `start-structure-design(project_id, title)`
+- `read-design-level(workspace_id, focus_id?, design_revision_id?)`
+- `revise-structure-design(workspace_id, base_design_revision_id, operations, rationale)`
+- `diff-structure-design(workspace_id, from_revision_id?, to_revision_id?)`
+- `create-implementation-context(workspace_id, design_revision_id, expected_diff_digest)`
+- `list-structure-design-versions(workspace_id)`
+- `compare-design-to-current(design_revision_id, observed_revision_id?)`
 
-- `create-design-workspace(project_id, base_observed_revision_id, title)`
-- `inspect-design-workspace(workspace_id)`
-- `apply-design-operations(workspace_id, base_design_revision_id, operations, rationale)`
-- `validate-design-revision(design_revision_id)`
-- `compare-design-to-baseline(design_revision_id)`
-- `submit-design-for-review(design_revision_id)`
-- `approve-design-revision(design_revision_id, review_note)`
-- `export-implementation-change(design_revision_id)`
-- `rebase-design-workspace(workspace_id, new_observed_revision_id)`
-- `compare-implementation-to-design(export_id, observed_revision_id)`
-- `resolve-verification-report(report_id, decision, note)`
+`start-structure-design` requires the latest valid root Observation. `revise-structure-design` rejects observed
+IDs as mutation targets. `create-implementation-context` requires explicit user instruction, records the actual
+authenticated initiating principal, binds an exact immutable design/diff coordinate, and schedules no scan.
+Later comparison is optional and read-only.
 
-`apply-design-operations` rejects an observed ID as a mutation target. Operations may cite an observed ID only through `DesignBaselineLink`.
+### 7.4 Roles and long-running work
 
-### 7.3 Suggested REST resources
+The default root contains only `project-context`, `understand-current`, and `design-future`. A hidden
+`observation-pipeline` Role owns native snapshot/import/publication methods and requires a trusted service
+principal. Broader 0.3 tools remain on a separate compatibility root during migration.
 
-```text
-GET  /api/v1/projects/{project}/observation
-GET  /api/v1/observed-revisions/{revision}
-GET  /api/v1/observed-revisions/{revision}/capabilities
-GET  /api/v1/observed-revisions/{revision}/responsibilities/{id}
-GET  /api/v1/observed-revisions/{revision}/evidence/{subject}
-POST /api/v1/observed-revisions/{revision}/expansions
-POST /api/v1/observed-revisions/{revision}/issues
-
-POST /api/v1/design-workspaces
-GET  /api/v1/design-workspaces/{workspace}
-POST /api/v1/design-workspaces/{workspace}/revisions
-POST /api/v1/design-revisions/{revision}/review
-POST /api/v1/design-revisions/{revision}/approval
-POST /api/v1/design-revisions/{revision}/exports
-GET  /api/v1/implementation-exports/{export}
-POST /api/v1/implementation-exports/{export}/verification
-```
-
-Long-running scan, analysis, projection, expansion, and verification requests return `202 Accepted` with a job resource. The frontend polls with backoff initially; server events can be added later without changing domain contracts.
+Refresh requests return a job resource and report `unchanged | incremental | full`. The UI may poll or subscribe
+without changing the operation contract. Browser-only REST business endpoints are migration compatibility, not
+the target architecture.
 
 ## 8. Frontend application architecture
 
@@ -795,10 +804,10 @@ type GraphMode =
 
 Do not infer mode from the presence of click handlers or CSS classes. Exhaustive types should make an observed edit action impossible to wire without a compiler error.
 
-Data loading is split:
+Data loading is split and uses the same MCP operations as the conversational Agent:
 
-- Understand route loads only observation coordinate, observed graph slice, observed capabilities, and selected evidence on demand.
-- Design route loads workspace metadata, current DesignRevision, baseline diff, and review state.
+- Understand route calls `read-current-level` and never loads descendants beyond the visible level.
+- Design route calls `read-design-level`, `revise-structure-design`, and `diff-structure-design`.
 - Do not repeat the current all-in-one `loadWorkspace` request fan-out on every tab or version change.
 - Cache immutable revisions by ID. Latest-coordinate endpoints may be refreshed; content-addressed revision responses do not need refetching.
 
@@ -817,7 +826,7 @@ Existing 0.3 data has ambiguous provenance and must not be relabeled as observed
 ### Phase 1 — introduce separate stores
 
 - Add new tables and immutable asset roots.
-- Introduce `ObservationRepository`, `DesignRepository`, and `ExportRepository`.
+- Introduce `ObservationRepository`, `DesignRepository`, and `ImplementationContextRepository`.
 - Keep all existing APIs read-compatible.
 
 ### Phase 2 — integrate Understand Anything
@@ -831,7 +840,7 @@ Existing 0.3 data has ambiguous provenance and must not be relabeled as observed
 
 ### Phase 3 — generate observed truth independently
 
-- Run a fresh full scan and UA import for Idea Factory.
+- Run an initial full scan and UA import for Idea Factory; preserve UA state for later incremental runs.
 - Project a new observed graph with evidence bindings.
 - Add recursive expansion and freshness behavior.
 - Never seed the observed graph using the old accepted model as truth. Old mappings may be supplied as non-authoritative projector hints and must still pass binding validation.
@@ -846,14 +855,17 @@ Existing 0.3 data has ambiguous provenance and must not be relabeled as observed
 ### Phase 5 — ship the two tabs
 
 - Route the current read experience into Understand and remove all design mutation actions from it.
-- Ship Design with expected functions, target graph, operation history, diff review, approval, and export.
+- Ship Design with expected functions, target graph, operation history, diff review, and implementation-context handoff.
 - Add the controlled tab bridges.
 
-### Phase 6 — close the implementation loop
+### Phase 6 — ship the on-demand MCP surface
 
-- Ingest post-implementation scans.
-- Produce VerificationReports.
-- Allow human convergence review.
+- Add a persistent runner that preserves the UA state needed for incremental `/understand` updates.
+- Skip all UA work when repository content is unchanged and report every full fallback reason.
+- Replace broad graph reads with one-page-equivalent `read-current-level` and `read-design-level` operations.
+- Expose the compact three-Role public graph and move native publication into a hidden service Role.
+- Create implementation context after explicit user instruction without scheduling post-coding analysis.
+- Keep historical-design versus later-observation comparison optional and read-only.
 - Retire mixed 0.3 mutation tools once no active client depends on them.
 
 Rollout uses a per-project feature flag until an observed revision and a migrated design workspace are both available. Rollback returns to read-only 0.3; it must not write 0.4 objects back into 0.3 tables.
@@ -888,15 +900,17 @@ Rollout uses a per-project feature flag until an observed revision and a migrate
 - recursion and loops do not cause infinite projection or navigation;
 - identical projection jobs are idempotent.
 
-### 10.4 Design/export/verification
+### 10.4 Design, implementation context, and optional comparison
 
 - operations create new draft revisions;
 - layout changes do not enter semantic diff;
-- approval locks an exact digest;
-- stale or invalid baselines block export;
-- exported manifests validate every bundled digest;
+- finalization locks an exact digest;
+- stale or invalid baselines block implementation-context creation;
+- implementation-context manifests validate every bundled digest;
 - later code is scanned rather than promoted from the target design;
-- verifier uncertainty requires human resolution.
+- finalization schedules no scan or automatic convergence workflow;
+- later comparison never mutates either the historical target or current Observation;
+- structural divergence is reported rather than treated as an automatic implementation failure.
 
 ### 10.5 Product UI
 
@@ -920,10 +934,11 @@ The 0.4 redesign is complete when:
 6. a human or Agent cannot mutate an observed graph through REST, MCP, repository methods, or shared object identity;
 7. users can create a target design from an exact observed baseline and edit expected functions and target structure without claiming the code already implements them;
 8. review clearly shows semantic additions, removals, contract changes, workflow changes, unresolved questions, and acceptance criteria;
-9. only an approved, current-baseline DesignRevision can produce an ImplementationChangeBundle;
+9. only a finalized, current-baseline DesignRevision can produce an ImplementationChangeBundle;
 10. a Coding Agent can consume that bundle without access to CoIntent's mutable database;
-11. post-implementation code is rescanned and compared against the approved target;
-12. legacy 0.3 models remain auditable but are never silently certified as observed truth.
+11. repeat analysis uses UA incremental mode whenever valid prior state exists, while unchanged code spends no UA tokens;
+12. coding completion triggers no scan; later comparison happens only after another user-requested refresh;
+13. legacy 0.3 models remain auditable but are never silently certified as observed truth.
 
 ## 12. Product decisions captured by this design
 
@@ -935,5 +950,6 @@ The 0.4 redesign is complete when:
 - The UA graph appears as drillable evidence, not as the main user-facing graph.
 - Observed graph expansion is a generation request; target graph expansion is a design operation.
 - Human corrections to observed interpretation become issues and regeneration, never direct edits.
-- Export produces a semantic implementation bundle, not a source patch.
-- Code after implementation must earn observed status through the full analysis pipeline.
+- Implementation handoff produces a semantic constraint bundle, not a source patch.
+- Code earns observed status only through the analysis pipeline, which is invoked on demand and computes
+  incrementally whenever valid UA state exists.

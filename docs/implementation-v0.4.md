@@ -1,8 +1,12 @@
 # CoIntent 0.4 Execution Path
 
-**Status:** vertical loop delivered
-**Decision baseline:** [design-v0.4](design-v0.4.md), [ADR-0001](adr-0001-codemap-engine.md)  
+**Status:** core data loop delivered; on-demand MCP surface and incremental UA runner next
+**Decision baseline:** [design-v0.4](design-v0.4.md), [ADR-0001](adr-0001-codemap-engine.md)
 **Delivery rule:** ship one Understand Anything path first; introduce no generic analyzer framework.
+
+The current product-experience authority is [understand on demand, design on demand](on-demand-product-flow.md).
+Coding completion does not trigger scanning or convergence. The implemented verification records remain useful
+for optional later comparison, but are not a mandatory user journey.
 
 ## Current implementation checkpoint
 
@@ -27,21 +31,22 @@ Implemented in the first working slice:
 - human-only browser approval outside the MCP tool graph, locked reviewed revisions, and auditable approval assets;
 - deterministic `ImplementationChangeBundle` export with exact coordinates, semantic operations, bounded source
   context, acceptance checks, and a coding-Agent prompt that grants no model-store authority;
-- post-implementation comparison against a later observed/code coordinate with explicit matched, missing,
+- optional comparison against a later observed/code coordinate with explicit matched, missing,
   unexpected, ambiguous, and stale claims;
-- human-only convergence/needs-revision decisions outside the MCP tool graph, with evidence reports and
+- human-only comparison decisions outside the MCP tool graph, with evidence reports and
   decisions stored as immutable audit assets;
 - desktop and mobile Understand/Design mode boundary;
-- real-browser verification of current, refinement, atomic, parent-return, design, review/export,
-  failed-convergence, and mobile flows.
+- real-browser verification of current, refinement, atomic, parent-return, design, review/context-export,
+  optional later comparison, and mobile flows.
 
-The 0.4 vertical loop is implemented. The remaining release work is running the pinned external UA engine
-against the production Idea Factory repository and reviewing its real-world coverage before enabling it by default.
+The immutable data primitives are implemented. The next slice is the compact MCP-only public surface and a
+persistent runner that invokes UA incrementally. The current CLI still imports externally completed UA JSON.
 
 ## 1. Target vertical loop
 
 ```text
-capture full Git snapshot
+user asks to understand or starts design
+  → capture full Git snapshot
   → run pinned Understand Anything outside the web request
   → import and validate UA JSON
   → publish immutable UA snapshot
@@ -49,10 +54,14 @@ capture full Git snapshot
   → browse current functions and recursive structure read-only
   → create a design workspace from an observed baseline
   → edit/review target behavior
-  → export approved semantic diff
+  → freeze the reviewed semantic diff as implementation context
   → coding Agent implements
-  → capture + UA import again
-  → verify target against the new observation
+  → stop
+
+later user asks to understand or design
+  → incremental refresh when code changed
+  → publish real structure from code
+  → optionally compare it with the historical target
 ```
 
 The loop is delivered in thin vertical increments. Existing 0.3 data remains readable throughout. No migration step relabels legacy human-authored data as current-system truth.
@@ -159,24 +168,24 @@ Exit criteria:
 - export is deterministic and portable;
 - approval actor and timestamp are auditable.
 
-### Increment F — close the loop
+### Increment F — optional later comparison primitives
 
 **Checkpoint:** delivered in the current working slice.
 
 Deliverables:
 
-1. ingest the post-implementation Git/UA snapshots;
-2. compare the approved target with a newly projected observed revision;
+1. ingest a later user-requested Git/UA snapshot;
+2. optionally compare the historical target with a newly projected observed revision;
 3. classify matched, missing, unexpected, ambiguous, and stale claims;
-4. require human convergence review;
-5. link accepted verification to the implementation bundle without rewriting either input.
+4. keep any human comparison conclusion explicit;
+5. link an optional human interpretation to the implementation context without rewriting either input.
 
 Exit criteria:
 
-- code change alone never marks a design converged;
+- code change alone never triggers analysis or marks a design converged;
 - uncertainty remains explicit;
-- all verification claims link to new-code evidence;
-- failed verification leaves previous current observation intact.
+- all comparison claims link to new-code evidence;
+- failed comparison leaves the previous current observation intact.
 
 ## 3. Backend construction order
 
@@ -246,21 +255,25 @@ created_at: ...
 
 Every observed node carries one or more `EvidenceBinding` records. A semantic Step binding records both its semantic UA node and the overlapping structural UA node IDs from `knowledge-graph.json`. Domain and Flow nodes inherit the unique union of descendant Step evidence. Native UA IDs are evidence references scoped by `ua_snapshot_id`, not globally stable CoIntent IDs.
 
-## 5. Public authority matrix for the first release
+## 5. Public authority matrix for the on-demand surface
 
-| Operation | Browser | Conversation Agent | Operator pipeline |
+The browser and conversational Agent are MCP clients. Their permissions differ by authenticated principal, not
+by transport or caller-supplied actor fields.
+
+| Operation | Human MCP principal | Agent MCP principal | Observation worker |
 |---|---:|---:|---:|
-| Read observation | yes | yes | yes |
-| Request later scan/expansion | yes | yes | yes |
-| Import UA JSON | no | no | yes |
-| Insert/update/delete observed node | no API | no API | no API |
-| Report understanding issue | yes | yes | yes |
-| Edit design draft | yes | propose | no |
-| Approve/export design | human only | no | no |
-| Compare later observation to approved target | yes | yes | yes |
-| Declare converged / needs revision | human only | no API | no |
+| List projects and inspect state | yes | yes | read |
+| Request an idempotent refresh | yes | yes | run |
+| Read one current/design level | yes | yes | read |
+| Publish UA or an observed revision | no API | no API | yes |
+| Insert/update/delete an observed node | no API | no API | no public API |
+| Revise a target-design draft | yes | scoped proposal | no |
+| Finalize exact implementation context | yes | after explicit user instruction | no |
+| Compare a historical design with current | yes | yes | read inputs |
 
-The import command accepts files from the trusted pipeline host. The HTTP and MCP surfaces accept identifiers and bounded requests, never native graph payloads.
+The hidden worker accepts a trusted job coordinate and completed UA artifacts; it never accepts a replacement
+graph from a business client. Public MCP methods accept identifiers, intent, and bounded navigation parameters,
+never native graph payloads.
 
 ## 6. Test fixtures
 
@@ -287,5 +300,9 @@ The project flag `observation_v04_enabled` remains false until Increment A passe
 - read-only authority tests pass for browser and MCP;
 - frontend empty, stale, partial, and current states pass;
 - existing 0.3 tests remain green.
+
+The on-demand runner additionally must prove that an unchanged repository skips UA and domain work, a changed
+repository with valid UA state uses incremental `/understand`, a missing or invalid cache reports a full
+fallback, starting design refreshes the baseline first, and coding completion schedules no work.
 
 Rollback hides the 0.4 routes and returns to legacy Design. It never converts an observed revision into a 0.3 editable model.
