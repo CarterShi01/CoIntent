@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { fetchSession, listProjects, loadWorkspace, login, logout } from "./api";
+import { fetchObservation, fetchSession, listProjects, loadWorkspace, login, logout } from "./api";
 import type {
   AlignmentBaseline, ChangeSet, DesignVersion, Finding, ImplementationLink, ModelResponse,
-  OverviewResponse, Project, Proposal, Responsibility, SpecificationItem,
+  ObservationCoordinate, OverviewResponse, Project, Proposal, Responsibility, SpecificationItem,
   SpecificationResponsibilityLink, Workflow,
 } from "./types";
 
@@ -17,6 +17,7 @@ type Workspace = {
   changeSets: ChangeSet[];
 };
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; user: string | null };
+type ProcessMode = "understand" | "design";
 
 export default function App() {
   const [auth, setAuth] = useState<Auth>({ state: "checking" });
@@ -24,6 +25,10 @@ export default function App() {
   const [projectId, setProjectId] = useState("");
   const [designVersion, setDesignVersion] = useState<number | undefined>();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [observation, setObservation] = useState<ObservationCoordinate | undefined>();
+  const [mode, setMode] = useState<ProcessMode>(() => location.pathname.endsWith("/design") ? "design" : "understand");
+  const [selectedObserved, setSelectedObserved] = useState("");
+  const [mobilePane, setMobilePane] = useState<"functions" | "structure" | "details">("functions");
   const [path, setPath] = useState<string[]>([]);
   const [forwardIds, setForwardIds] = useState<string[]>([]);
   const [selectedSpec, setSelectedSpec] = useState("");
@@ -33,6 +38,12 @@ export default function App() {
     fetchSession()
       .then((session) => setAuth(session.authed ? { state: "in", user: session.user } : { state: "out" }))
       .catch((reason: unknown) => setError(errorText(reason)));
+  }, []);
+
+  useEffect(() => {
+    const syncPath = () => setMode(location.pathname.endsWith("/design") ? "design" : "understand");
+    addEventListener("popstate", syncPath);
+    return () => removeEventListener("popstate", syncPath);
   }, []);
 
   useEffect(() => {
@@ -46,8 +57,12 @@ export default function App() {
   useEffect(() => {
     if (auth.state !== "in" || !projectId) return;
     setWorkspace(null);
-    loadWorkspace(projectId, designVersion).then((next) => {
+    setObservation(undefined);
+    Promise.all([loadWorkspace(projectId, designVersion), fetchObservation(projectId)]).then(([next, observed]) => {
       setWorkspace(next);
+      setObservation(observed);
+      setSelectedObserved(observed.observed_revision?.capabilities[0]?.responsibility_id
+        ?? observed.observed_revision?.responsibilities[0]?.id ?? "");
       const model = next.model.model;
       const root = rootResponsibilities(model.responsibilities)[0] ?? model.responsibilities[0];
       setPath(root ? [root.id] : []);
@@ -62,10 +77,17 @@ export default function App() {
     else setError(message);
   }
 
+  function chooseMode(next: ProcessMode) {
+    if (next === mode) return;
+    history.pushState({}, "", next === "design" ? "/design" : "/understand");
+    setMode(next);
+    setMobilePane("functions");
+  }
+
   if (error) return <Failure message={error} />;
   if (auth.state === "checking") return <Loading label="Checking access…" />;
   if (auth.state === "out") return <LoginScreen onDone={(user) => setAuth({ state: "in", user })} />;
-  if (!projectId || !workspace) return <Loading label="Opening the responsibility model…" />;
+  if (!projectId || !workspace || observation === undefined) return <Loading label="Opening the workspace…" />;
 
   const response = workspace.model;
   const model = response.model;
@@ -87,6 +109,7 @@ export default function App() {
 
   function chooseSpecification(id: string) {
     setSelectedSpec(id);
+    setMobilePane("structure");
     const links = model.specification_responsibility_links.filter((item) => item.specification_id === id);
     const linked = links.find((item) => item.kind === "realizes") ?? links[0];
     if (linked) {
@@ -120,20 +143,39 @@ export default function App() {
       <label className="project-picker"><span>Project</span><select value={projectId} onChange={(event) => { setDesignVersion(undefined); setProjectId(event.target.value); }}>
         {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
       </select></label>
-      <div className="model-coordinate">
-        <label><span>Design</span><select value={response.version} onChange={(event) => setDesignVersion(Number(event.target.value))}>
+      {mode === "understand" ? <div className="model-coordinate observation-coordinate">
+        <div><span>Code</span><strong>{observation.code_snapshot?.revision.slice(0, 8) ?? "No full snapshot"}</strong></div>
+        <i aria-hidden="true">→</i>
+        <div><span>Understand Anything</span><strong>{observation.ua_snapshot ? `graph ${observation.ua_snapshot.ua_graph_version}` : "Not imported"}</strong></div>
+        <div className={observation.status === "current" ? "aligned" : "drifted"}><span>Current structure</span><strong>{observation.status === "current" ? "Read only · current" : observation.status === "stale" ? "Read only · stale" : "Not generated"}</strong></div>
+      </div> : <div className="model-coordinate design-coordinate">
+        <label><span>Target design</span><select value={response.version} onChange={(event) => setDesignVersion(Number(event.target.value))}>
           {workspace.versions.map((version) => <option key={version.version} value={version.version}>v{version.version} · {version.message}</option>)}
         </select></label>
-        <i aria-hidden="true">↔</i>
-        <div><span>Code</span><strong>{workspace.baseline.code_snapshot?.snapshot.revision.slice(0, 8) ?? "No snapshot"}</strong></div>
-        <div className={workspace.baseline.is_current ? "aligned" : "drifted"}><span>Alignment</span><strong>{workspace.baseline.is_current ? "Current" : "Review needed"}</strong></div>
-      </div>
-      <button className="account" onClick={() => void logout().finally(() => { setWorkspace(null); setAuth({ state: "out" }); })}>
+        <i aria-hidden="true">←</i>
+        <div><span>Baseline code</span><strong>{workspace.baseline.code_snapshot?.snapshot.revision.slice(0, 8) ?? "Not selected"}</strong></div>
+        <div className="design-state"><span>Authority</span><strong>Human-owned target</strong></div>
+      </div>}
+      <button className="account" onClick={() => void logout().finally(() => { setWorkspace(null); setObservation(undefined); setAuth({ state: "out" }); })}>
         <span>{auth.user ?? "user"}</span><small>Sign out</small>
       </button>
     </header>
 
-    <main className="workspace">
+    <nav className="process-tabs" aria-label="System process">
+      <button className={mode === "understand" ? "active understand" : ""} aria-current={mode === "understand" ? "page" : undefined} onClick={() => chooseMode("understand")}>
+        <span>Code → current model</span><strong>Understand current</strong><small>Read only</small>
+      </button>
+      <button className={mode === "design" ? "active design" : ""} aria-current={mode === "design" ? "page" : undefined} onClick={() => chooseMode("design")}>
+        <span>Intent → implementation diff</span><strong>Design future</strong><small>Editable target</small>
+      </button>
+    </nav>
+    <nav className={`mobile-pane-tabs ${mode}`} aria-label="Workspace area">
+      <button className={mobilePane === "functions" ? "active" : ""} onClick={() => setMobilePane("functions")}>{mode === "understand" ? "Functions" : "Expected"}</button>
+      <button className={mobilePane === "structure" ? "active" : ""} onClick={() => setMobilePane("structure")}>Structure</button>
+      <button className={mobilePane === "details" ? "active" : ""} onClick={() => setMobilePane("details")}>{mode === "understand" ? "Evidence" : "Details"}</button>
+    </nav>
+
+    {mode === "understand" ? <UnderstandingWorkspace coordinate={observation} selectedId={selectedObserved} onSelect={(id) => { setSelectedObserved(id); setMobilePane("structure"); }} mobilePane={mobilePane} /> : <main className="workspace design-workspace" data-mobile-pane={mobilePane}>
       <SpecificationPanel
         items={model.specification_items}
         links={model.specification_responsibility_links}
@@ -151,7 +193,7 @@ export default function App() {
             </span>)}
           </nav>
           <div className="logic-title">
-            <div><span className="eyebrow">Current responsibility</span><h1>{current?.name ?? "No responsibility"}</h1></div>
+            <div><span className="eyebrow">Target responsibility</span><h1>{current?.name ?? "No responsibility"}</h1></div>
             <div className="workflow-navigation" aria-label="Workflow navigation">
               <span>Workflow navigation</span>
               <button disabled={path.length <= 1} onClick={exitLevel}><b>←</b> Exit level</button>
@@ -175,8 +217,76 @@ export default function App() {
         changeSets={workspace.changeSets}
         baseline={workspace.baseline}
       />
-    </main>
+    </main>}
   </div>;
+}
+
+function UnderstandingWorkspace({ coordinate, selectedId, onSelect, mobilePane }: {
+  coordinate: ObservationCoordinate;
+  selectedId: string;
+  onSelect: (id: string) => void;
+  mobilePane: "functions" | "structure" | "details";
+}) {
+  const revision = coordinate.observed_revision;
+  if (!revision) return <main className="observation-empty">
+    <section>
+      <span className="empty-kicker">No verified current model</span>
+      <h1>Generate the view from code.</h1>
+      <p>Capture a full repository snapshot, run Understand Anything, then import its knowledge and domain graph through the operator pipeline. A design draft is never shown here as current code.</p>
+      <code>cointent scan &lt;repo&gt; --project-id {coordinate.project_id} --scope full</code>
+      <code>cointent import-understand-anything --project-id {coordinate.project_id} …</code>
+    </section>
+  </main>;
+
+  const byId = new Map(revision.responsibilities.map((item) => [item.id, item]));
+  const selected = byId.get(selectedId) ?? revision.responsibilities[0];
+  const parentById = new Map<string, string>();
+  revision.responsibilities.forEach((parent) => parent.workflow?.nodes.forEach((node) => parentById.set(node.responsibility_id, parent.id)));
+  const children = (selected?.workflow?.nodes ?? []).map((node) => byId.get(node.responsibility_id)).filter(Boolean) as Responsibility[];
+  const evidenceBySubject = new Map(revision.bindings.map((item) => [item.subject_id, item.evidence]));
+  const selectedEvidence = selected ? evidenceBySubject.get(selected.id) ?? [] : [];
+  const lineage: Responsibility[] = [];
+  let cursor: Responsibility | undefined = selected;
+  while (cursor) {
+    lineage.unshift(cursor);
+    const parentId = parentById.get(cursor.id);
+    cursor = parentId ? byId.get(parentId) : undefined;
+  }
+
+  return <main className="workspace observed-workspace" data-mobile-pane={mobilePane}>
+    <aside className="spec-pane capability-pane">
+      <div className="pane-heading"><span className="eyebrow">What the code does</span><h2>System functions</h2><p>Generated from source evidence through Understand Anything. Select a function to inspect its implemented flow.</p></div>
+      <div className="spec-columns"><span>Observed function</span><span>Proof</span></div>
+      <div className="spec-tree">{revision.capabilities.map((item) => <button key={item.id} className={`spec-row ${selected?.id === item.responsibility_id ? "selected" : ""}`} onClick={() => onSelect(item.responsibility_id)}>
+        <span className="tree-mark">◆</span><span><strong>{item.name}</strong><small>{item.description}</small></span><em title={`${item.evidence_count} source bindings`}>{item.evidence_count}</em>
+      </button>)}</div>
+      <div className="observation-proof"><span>Immutable coordinate</span><code>{revision.id}</code><small>{revision.responsibilities.length} verified responsibilities · {revision.diagnostics.length} diagnostics</small></div>
+    </aside>
+
+    <section className="logic-pane observed-logic">
+      <div className="logic-head">
+        <nav className="breadcrumbs" aria-label="Observed structure path">{lineage.map((item, index) => <span key={item.id}>{index > 0 && <i>›</i>}<button onClick={() => onSelect(item.id)}>{item.name}</button></span>)}</nav>
+        <div className="logic-title"><div><span className="eyebrow">Implemented responsibility</span><h1>{selected?.name ?? "No verified structure"}</h1></div><span className="read-only-seal">Read only<br /><b>Code-derived</b></span></div>
+        <p className="responsibility-description">{selected?.description}</p>
+        <div className="scope-note"><span>Inside this node</span><strong>{children.length} verified child nodes</strong><small>Every visible node resolves to captured source.</small></div>
+      </div>
+      <div className="observed-flow">
+        <div className="workflow-toolbar"><div><span className="eyebrow">Current structure</span><strong>{children.length ? "Select a node to inspect or descend" : "Evidence-backed leaf"}</strong></div><div className="legend"><span><i className="line normal" />UA order</span></div></div>
+        {children.length ? <div className="observed-node-row">{children.map((node, index) => <div className="observed-node-wrap" key={node.id}>
+          {index > 0 && <span className="observed-connector" aria-hidden="true">→</span>}
+          <button className="observed-node-card" onClick={() => onSelect(node.id)}><span>{node.source_ids[0]?.split(":", 1)[0] ?? "responsibility"}</span><strong>{node.name}</strong><p>{node.description}</p><small>{evidenceBySubject.get(node.id)?.length ?? 0} source binding{(evidenceBySubject.get(node.id)?.length ?? 0) === 1 ? "" : "s"} <b>→</b></small></button>
+        </div>)}</div> : <div className="leaf-stage"><div className="leaf-symbol"><span /><i /><b /></div><span className="eyebrow">Verified leaf</span><h2>{selected?.name}</h2><p>This is the deepest imported semantic level. Use its source bindings to inspect the implementation.</p></div>}
+      </div>
+    </section>
+
+    <aside className="inspector observed-inspector">
+      <div className="inspector-heading"><span className="eyebrow">Why this is shown</span><h2>Source evidence</h2><code>{selected?.source_ids[0]}</code></div>
+      <section className="evidence-block"><div className="section-title"><div><span className="eyebrow">Captured code</span><h3>Bindings</h3></div><strong>{selectedEvidence.length}</strong></div>
+        {selectedEvidence.map((item) => <article className="evidence-row" key={`${item.ua_node_id}-${item.path}-${item.start_line}`}><span>{item.origin === "ua_semantic" ? "Semantic + structural proof" : "UA structural"}</span><code>{item.path}{item.start_line ? `:${item.start_line}${item.end_line && item.end_line !== item.start_line ? `–${item.end_line}` : ""}` : ""}</code><p>Anchored by {item.structural_ua_node_ids.length} structural node{item.structural_ua_node_ids.length === 1 ? "" : "s"} · digest {item.source_digest.slice(0, 12)}</p></article>)}
+      </section>
+      <section className="coordinate-card"><span>Provenance</span><dl><div><dt>Code</dt><dd>{coordinate.code_snapshot?.revision.slice(0, 12)}</dd></div><div><dt>UA graph</dt><dd>{coordinate.ua_snapshot?.ua_graph_version}</dd></div><div><dt>UA pin</dt><dd>{coordinate.ua_snapshot?.ua_tool_revision}</dd></div><div><dt>Status</dt><dd>{coordinate.status}</dd></div></dl></section>
+    </aside>
+  </main>;
 }
 
 function SpecificationPanel({ items, links, selected, onSelect, summary }: {

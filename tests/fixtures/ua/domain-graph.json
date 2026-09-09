@@ -1,0 +1,56 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "CoIntent",
+    "languages": ["Python", "TypeScript"],
+    "frameworks": ["Starlette", "React"],
+    "description": "Human-readable program understanding and future design",
+    "analyzedAt": "2026-09-09T00:00:00Z",
+    "gitCommitHash": "8d4558811b51f918d400acdc535ae018ede824d6"
+  },
+  "nodes": [
+    {
+      "id": "domain:workspace",
+      "type": "domain",
+      "name": "Workspace Understanding",
+      "summary": "Lets people open a project and understand its current implemented shape.",
+      "tags": ["understanding"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "flow:open-project",
+      "type": "flow",
+      "name": "Open a project",
+      "summary": "Loads known projects and serves their verified current model.",
+      "tags": ["project", "read"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "step:list-projects",
+      "type": "step",
+      "name": "List projects",
+      "summary": "Reads project coordinates from the repository.",
+      "tags": ["repository"],
+      "complexity": "simple",
+      "filePath": "src/cointent/repository.py",
+      "lineRange": [181, 187]
+    },
+    {
+      "id": "step:serve-workspace",
+      "type": "step",
+      "name": "Serve workspace",
+      "summary": "Routes authenticated requests to the current understanding surface.",
+      "tags": ["http"],
+      "complexity": "moderate",
+      "filePath": "src/cointent/app.py",
+      "lineRange": [55, 135]
+    }
+  ],
+  "edges": [
+    {"source": "domain:workspace", "target": "flow:open-project", "type": "contains_flow", "direction": "forward", "weight": 1.0},
+    {"source": "flow:open-project", "target": "step:list-projects", "type": "flow_step", "direction": "forward", "weight": 0.1},
+    {"source": "flow:open-project", "target": "step:serve-workspace", "type": "flow_step", "direction": "forward", "weight": 0.2}
+  ],
+  "layers": [],
+  "tour": []
+}

@@ -1,0 +1,60 @@
+{
+  "version": "1.0.0",
+  "kind": "codebase",
+  "project": {
+    "name": "CoIntent",
+    "languages": ["Python", "TypeScript"],
+    "frameworks": ["Starlette", "React"],
+    "description": "Human-readable program understanding and future design",
+    "analyzedAt": "2026-09-09T00:00:00Z",
+    "gitCommitHash": "8d4558811b51f918d400acdc535ae018ede824d6"
+  },
+  "nodes": [
+    {
+      "id": "file:repository",
+      "type": "file",
+      "name": "repository.py",
+      "filePath": "src/cointent/repository.py",
+      "lineRange": [1, 1000],
+      "summary": "Persists immutable models and observations.",
+      "tags": ["persistence"],
+      "complexity": "complex"
+    },
+    {
+      "id": "function:list-projects",
+      "type": "function",
+      "name": "list_projects",
+      "filePath": "src/cointent/repository.py",
+      "lineRange": [181, 187],
+      "summary": "Lists available projects.",
+      "tags": ["projects"],
+      "complexity": "simple"
+    },
+    {
+      "id": "file:app",
+      "type": "file",
+      "name": "app.py",
+      "filePath": "src/cointent/app.py",
+      "lineRange": [1, 157],
+      "summary": "Hosts the HTTP and MCP application.",
+      "tags": ["http"],
+      "complexity": "moderate"
+    },
+    {
+      "id": "function:build-http-app",
+      "type": "function",
+      "name": "build_http_app",
+      "filePath": "src/cointent/app.py",
+      "lineRange": [55, 135],
+      "summary": "Builds authenticated HTTP surfaces.",
+      "tags": ["http"],
+      "complexity": "complex"
+    }
+  ],
+  "edges": [
+    {"source": "file:repository", "target": "function:list-projects", "type": "contains", "direction": "forward", "weight": 1.0},
+    {"source": "file:app", "target": "function:build-http-app", "type": "contains", "direction": "forward", "weight": 1.0}
+  ],
+  "layers": [],
+  "tour": []
+}

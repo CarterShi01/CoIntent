@@ -108,6 +108,72 @@ class InspectAlignmentBaseline(Tool):
         return _repository(self).alignment_baseline(project_id)
 
 
+class InspectObservationCoordinate(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="inspect-observation-coordinate",
+            description="Read the immutable code, Understand Anything, and observed-model coordinate.",
+            read_only=True,
+        )
+
+    async def invoke(
+        self, project_id: str = "idea-factory", observed_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        return _repository(self).observation_coordinate(project_id, observed_revision_id)
+
+
+class ListObservedRevisions(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="list-observed-revisions",
+            description="List immutable current-system projections generated from Understand Anything.",
+            read_only=True,
+        )
+
+    async def invoke(self, project_id: str = "idea-factory", limit: int = 20) -> dict[str, Any]:
+        return {"observed_revisions": _repository(self).list_observed_revisions(project_id, limit)}
+
+
+class InspectObservedRevision(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="inspect-observed-revision",
+            description="Read one evidence-backed current-system projection; no mutation is available.",
+            read_only=True,
+        )
+
+    async def invoke(self, observed_revision_id: str) -> dict[str, Any]:
+        return _repository(self).get_observed_revision(observed_revision_id)
+
+
+class RequestObservationExpansion(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="request-observation-expansion",
+            description="Queue a bounded Understand Anything refinement for one observed node; accepts no graph content.",
+            read_only=False,
+        )
+
+    async def invoke(
+        self, project_id: str, observed_revision_id: str, node_id: str, depth: int = 1,
+    ) -> dict[str, Any]:
+        return _repository(self).request_observation_expansion(
+            project_id, observed_revision_id, node_id, depth,
+        )
+
+
+class ListObservationExpansions(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="list-observation-expansions",
+            description="List queued or completed Understand Anything refinement requests.",
+            read_only=True,
+        )
+
+    async def invoke(self, project_id: str = "idea-factory", limit: int = 20) -> dict[str, Any]:
+        return {"expansion_requests": _repository(self).list_observation_expansions(project_id, limit)}
+
+
 class InspectDesign(Tool):
     def __init__(self) -> None:
         super().__init__(name="inspect-design", description="Read an accepted CoIntent 0.3 design version.", read_only=True)
@@ -483,6 +549,21 @@ class ProjectManagement(Role):
         )
 
 
+class CurrentUnderstanding(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="current-understanding",
+            description="Read the code-derived current system produced through Understand Anything.",
+            instructions=(
+                "This surface is read-only. Treat the observed revision as derived from its exact code and UA "
+                "coordinates. Never reinterpret a user request as permission to replace observed nodes or edges; "
+                "send desired changes to the design process."
+            ),
+            tools=[InspectObservationCoordinate(), ListObservedRevisions(), InspectObservedRevision(),
+                   RequestObservationExpansion(), ListObservationExpansions()],
+        )
+
+
 class Specification(Role):
     def __init__(self) -> None:
         super().__init__(
@@ -546,7 +627,7 @@ class CoIntent(Role):
                 "Follow the three-level chain: specification → Responsibility Workflow → backend evidence. "
                 "Never substitute an architecture or code graph for the Responsibility model."
             ),
-            children=[ProjectManagement(), Specification(), ResponsibilityModel(), ImplementationAlignment(),
+            children=[ProjectManagement(), CurrentUnderstanding(), Specification(), ResponsibilityModel(), ImplementationAlignment(),
                       ChangeLifecycle(), HistoryAndPortability()],
         )
 

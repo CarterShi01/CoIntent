@@ -12,6 +12,10 @@ def test_contexture_graph_exposes_v03_agent_capabilities(tmp_path, monkeypatch) 
     assert {
         "cointent/project-management/list-projects",
         "cointent/project-management/list-design-versions",
+        "cointent/current-understanding/inspect-observation-coordinate",
+        "cointent/current-understanding/list-observed-revisions",
+        "cointent/current-understanding/inspect-observed-revision",
+        "cointent/current-understanding/request-observation-expansion",
         "cointent/specification/inspect-specification-tree",
         "cointent/responsibility-model/propose-design-patch",
         "cointent/responsibility-model/inspect-responsibility",
@@ -22,6 +26,14 @@ def test_contexture_graph_exposes_v03_agent_capabilities(tmp_path, monkeypatch) 
         "cointent/change-lifecycle/generate-implementation-brief",
         "cointent/history-and-portability/export-design-version",
     } <= refs
+    assert not any("import-understand-anything" in ref or "replace-observed" in ref for ref in refs)
+    understanding = compiled.server().surface.tree.open("cointent/current-understanding")
+    expansion_schema = {
+        tool["name"]: tool["input_schema"] for tool in understanding["tools"]
+    }["request-observation-expansion"]
+    assert set(expansion_schema["properties"]) == {
+        "project_id", "observed_revision_id", "node_id", "depth",
+    }
     assert {
         "cointent/responsibility-model/model-responsibilities",
         "cointent/responsibility-model/review-responsibility-model",

@@ -2,9 +2,9 @@
 
 **Make program logic legible to humans—and keep that explanation aligned with code.**
 
-CoIntent is an Agent-native system for modeling backend program logic as recursive `Responsibility` objects and `Workflow`s. A product manager can begin with a plain-language capability, enter the Responsibility that realizes it, and repeatedly drill into the smaller Responsibilities that cooperate to fulfill it. Concrete backend files remain linked as evidence without turning the model into a code or architecture diagram.
+CoIntent is an Agent-native system with two explicit processes: understand the current program from code, and design the program humans want next. A product manager can begin with a plain-language capability and repeatedly drill into the structure that fulfills it. Concrete source locations remain linked as evidence without turning the primary view into a file or class diagram.
 
-The current repository is a working **0.3 MVP**: Contexture-powered MCP, an English review workspace, project and immutable design-version management, SQLite plus portable JSON assets, a backend-only Git scanner, bidirectional change findings, and an Idea Factory experiment model.
+The repository contains the working **0.3 design MVP** plus the first **0.4 observation vertical slice**. Version 0.4 imports one pinned code-map source—Understand Anything—into immutable, evidence-backed, read-only current-system revisions. It intentionally has no multi-engine adapter framework.
 
 ## The model
 
@@ -41,13 +41,14 @@ Most code maps foreground files, classes, functions, imports, services, or deplo
 
 ## Human and Agent surfaces
 
-The web workspace has three coordinated areas:
+The web workspace has two top-level modes with the same three-area grammar:
 
-1. **Specification** — a compact, plain-language capability catalog.
-2. **Responsibility Workflow** — one semantic level at a time, with breadcrumb descent.
-3. **Object contract and evidence** — data members, inputs, outputs, backend mappings, and alignment review state.
+1. **Understand current** — generated from a full Git snapshot and Understand Anything artifacts; always read-only.
+2. **Design future** — expected functions and target Responsibilities; human-owned and independently versioned.
 
-MCP is the authoring and alignment surface. Agents can inspect and trace Responsibilities, assess structural signals, record original human wording, stage typed patches, accept or reject proposals, ingest code snapshots, find artifact impact, and close a versioned change loop.
+Both modes use a function list, one semantic graph level at a time, and a detail/evidence inspector. An absent observation produces an explicit generation state; a legacy design is never displayed as current code.
+
+MCP exposes read-only observation tools separately from the legacy design and alignment tools. The Understand Anything import is deliberately not an MCP or browser operation: only the trusted local/operator pipeline can ingest native graph JSON.
 
 The scanner only records deterministic repository facts. An Agent interprets those facts and stages semantic changes; observed code never silently becomes accepted design truth.
 
@@ -59,11 +60,25 @@ Requirements: Git, Python 3.11+, [uv](https://docs.astral.sh/uv/), and Node.js 2
 uv sync --extra dev
 npm --prefix web install
 
-# Read an existing repository and seed the bundled Idea Factory interpretation.
+# Legacy backend-only scan and optional 0.3 design seed.
 uv run cointent scan /path/to/idea-factory \
   --project-id idea-factory \
   --name "Idea Factory" \
   --seed-idea-factory
+
+# 0.4: capture every tracked file for the exact UA analysis coordinate.
+uv run cointent scan /path/to/idea-factory \
+  --project-id idea-factory \
+  --name "Idea Factory" \
+  --scope full
+
+# After pinned Understand Anything 2.9.6 has generated its JSON artifacts:
+uv run cointent import-understand-anything \
+  --project-id idea-factory \
+  --code-snapshot-id snapshot-... \
+  --knowledge-graph /path/to/idea-factory/.ua/knowledge-graph.json \
+  --domain-graph /path/to/idea-factory/.ua/domain-graph.json \
+  --ua-tool-revision 5feed1f2ce4f9c368d860f4c0ebc36d98a4693fc
 
 # Contexture MCP plus protected/read REST surface.
 uv run cointent serve
@@ -74,13 +89,14 @@ npm --prefix web run dev
 
 Open `http://127.0.0.1:5175`. The backend listens on `127.0.0.1:8811`. A local MCP client can use `uv run cointent mcp` over stdio.
 
-Re-running `scan` creates an incremental snapshot and compares it with the previous one. The target repository is read-only. Untracked files are omitted unless `--include-untracked` is explicitly supplied.
+Re-running `scan` creates an incremental snapshot and compares it with the previous one. The target repository is read-only. Untracked files are omitted unless `--include-untracked` is explicitly supplied. UA import requires a `--scope full` snapshot and validates commit, paths, graph references, line ranges, and structural corroboration before publishing an observed revision.
 
 ## MCP capabilities
 
 The Contexture graph groups typed tools and four method Skills under:
 
 - `project-management` — projects, immutable versions, and alignment coordinates;
+- `current-understanding` — read-only code/UA/observation coordinates and observed revisions;
 - `specification` — plain-language items, coverage, and original intent records;
 - `responsibility-model` — roots, focused inspection, cyclic path tracing, quality signals, and reviewed proposals;
 - `implementation-alignment` — backend snapshots, mappings, impact lookup, and findings;
@@ -97,7 +113,9 @@ SQLite is the transactional authority for projects, proposals, sessions of chang
 projects/<project-id>/
 ├── project.json
 ├── design/v000001.json
-└── snapshots/<snapshot-id>.json
+├── snapshots/<snapshot-id>.json
+├── understand-anything/<ua-snapshot-id>.json
+└── observed/<observed-revision-id>.json
 ```
 
 This gives the application reliable concurrency and query behavior while keeping its durable model portable and diffable.
@@ -111,12 +129,14 @@ npm --prefix web run build
 
 ## Documentation
 
+- [0.4 detailed design](docs/design-v0.4.md)
+- [Understand Anything decision](docs/adr-0001-codemap-engine.md)
+- [0.4 execution path](docs/implementation-v0.4.md)
 - [0.3 detailed design](docs/design-v0.3.md)
-- [0.3 implementation and release plan](docs/implementation-v0.3.md)
 - [modeling method and prior-art boundaries](docs/method.md)
 - [live review walkthrough](docs/review.md)
 
-Earlier versioned documents remain as historical records; they are not the current public model.
+Earlier versioned documents remain as historical records.
 
 ## Framework dependency
 
@@ -124,4 +144,4 @@ CoIntent pins Contexture to the exact latest upstream `master` commit available 
 
 ## Scope
 
-Version 0.3 focuses on code → Responsibility modeling and ongoing model ↔ code alignment. Full conversational specification authoring is intentionally a later phase. Software architecture and infrastructure views are out of scope: CoIntent currently explains program logic for product-level readers.
+Version 0.4 first delivers the trusted code → UA artifact → observed structure path and the hard separation between current understanding and future design. Recursive expansion, independent 0.4 design workspaces, semantic implementation bundles, and post-change verification follow the ordered execution plan. Infrastructure topology remains out of scope.

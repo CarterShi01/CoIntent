@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .models import ImplementationLink, ModelPatch, ProjectModel, apply_model_patch, semantic_diff
+from .observation import (
+    ObservationExpansionRequest,
+    ObservedModelRevision,
+    UAKnowledgeGraph,
+    UnderstandAnythingSnapshot,
+    build_ua_snapshot,
+    build_expansion_request,
+    project_observed_model,
+)
 from .scanner import RepositorySnapshot, is_backend_logic_candidate, snapshot_diff
 
 
@@ -76,6 +85,29 @@ class CoIntentRepository:
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), snapshot_json TEXT NOT NULL,
                     diff_json TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS understand_anything_snapshots (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    code_snapshot_id TEXT NOT NULL REFERENCES snapshots(id),
+                    snapshot_json TEXT NOT NULL, content_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(project_id, code_snapshot_id, content_digest)
+                );
+                CREATE TABLE IF NOT EXISTS observed_model_revisions (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    code_snapshot_id TEXT NOT NULL REFERENCES snapshots(id),
+                    ua_snapshot_id TEXT NOT NULL REFERENCES understand_anything_snapshots(id),
+                    parent_revision_id TEXT REFERENCES observed_model_revisions(id),
+                    refinement_of_node_id TEXT, revision_json TEXT NOT NULL,
+                    content_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(project_id, ua_snapshot_id, content_digest)
+                );
+                CREATE TABLE IF NOT EXISTS observation_expansion_requests (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    base_observed_revision_id TEXT NOT NULL REFERENCES observed_model_revisions(id),
+                    ua_snapshot_id TEXT NOT NULL REFERENCES understand_anything_snapshots(id),
+                    target_observed_node_id TEXT NOT NULL, depth INTEGER NOT NULL,
+                    status TEXT NOT NULL, result_observed_revision_id TEXT REFERENCES observed_model_revisions(id),
+                    request_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS alignment_findings (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                     snapshot_id TEXT NOT NULL REFERENCES snapshots(id), kind TEXT NOT NULL, severity TEXT NOT NULL,
@@ -97,6 +129,12 @@ class CoIntentRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_versions_project ON model_versions(project_id, version DESC);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_project ON snapshots(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ua_snapshots_project
+                    ON understand_anything_snapshots(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_observed_revisions_project
+                    ON observed_model_revisions(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_observation_expansions_project
+                    ON observation_expansion_requests(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_findings_project ON alignment_findings(project_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_mappings_project ON mapping_revisions(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_changes_project ON change_sets(project_id, status, updated_at DESC);
@@ -622,6 +660,179 @@ class CoIntentRepository:
             raise ValueError("snapshot does not belong to project")
         return snapshot_diff(before, after)
 
+    # Understand Anything imports and read-only current-system observation
+
+    def import_understand_anything(
+        self, project_id: str, code_snapshot_id: str, ua_tool_revision: str,
+        knowledge_graph: dict[str, Any], domain_graph: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Operator-only import of completed UA artifacts and atomic observation publication."""
+        self.get_project(project_id)
+        stored_code = self.get_snapshot(code_snapshot_id)
+        if stored_code["project_id"] != project_id:
+            raise ValueError("code snapshot does not belong to project")
+        code_snapshot = RepositorySnapshot.model_validate(stored_code["snapshot"])
+        knowledge = UAKnowledgeGraph.model_validate(knowledge_graph)
+        domain = None if domain_graph is None else UAKnowledgeGraph.model_validate(domain_graph)
+        created = _now()
+        ua_snapshot = build_ua_snapshot(
+            project_id=project_id, code_snapshot=code_snapshot, ua_tool_revision=ua_tool_revision,
+            knowledge_graph=knowledge, domain_graph=domain, created_at=created,
+        )
+        observed = project_observed_model(ua_snapshot, code_snapshot, created_at=created)
+        with self.connection() as db:
+            existing = db.execute(
+                "SELECT id FROM understand_anything_snapshots WHERE id=?", (ua_snapshot.id,),
+            ).fetchone()
+            if existing is None:
+                db.execute(
+                    """INSERT INTO understand_anything_snapshots(
+                       id,project_id,code_snapshot_id,snapshot_json,content_digest,created_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (ua_snapshot.id, project_id, code_snapshot_id, ua_snapshot.model_dump_json(),
+                     ua_snapshot.content_digest, created),
+                )
+            existing_observed = db.execute(
+                "SELECT id FROM observed_model_revisions WHERE id=?", (observed.id,),
+            ).fetchone()
+            if existing_observed is None:
+                db.execute(
+                    """INSERT INTO observed_model_revisions(
+                       id,project_id,code_snapshot_id,ua_snapshot_id,parent_revision_id,
+                       refinement_of_node_id,revision_json,content_digest,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (observed.id, project_id, code_snapshot_id, ua_snapshot.id,
+                     observed.parent_revision_id, observed.refinement_of_node_id,
+                     observed.model_dump_json(), observed.content_digest, created),
+                )
+        if existing is None:
+            self._write_ua_snapshot_asset(ua_snapshot)
+        if existing_observed is None:
+            self._write_observed_revision_asset(observed)
+        return {
+            "duplicate": existing is not None and existing_observed is not None,
+            "ua_snapshot": self.get_understand_anything_snapshot(ua_snapshot.id),
+            "observed_revision": self.get_observed_revision(observed.id),
+        }
+
+    def get_understand_anything_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT * FROM understand_anything_snapshots WHERE id=?", (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown Understand Anything snapshot {snapshot_id!r}")
+        return json.loads(row["snapshot_json"])
+
+    def list_understand_anything_snapshots(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT snapshot_json FROM understand_anything_snapshots
+                   WHERE project_id=? ORDER BY created_at DESC LIMIT ?""",
+                (project_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [json.loads(row["snapshot_json"]) for row in rows]
+
+    def get_observed_revision(self, revision_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT revision_json FROM observed_model_revisions WHERE id=?", (revision_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown observed revision {revision_id!r}")
+        return json.loads(row["revision_json"])
+
+    def list_observed_revisions(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT revision_json FROM observed_model_revisions
+                   WHERE project_id=? ORDER BY created_at DESC LIMIT ?""",
+                (project_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [json.loads(row["revision_json"]) for row in rows]
+
+    def observation_coordinate(
+        self, project_id: str, observed_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.get_project(project_id)
+        if observed_revision_id is None:
+            revisions = self.list_observed_revisions(project_id, 1)
+            if not revisions:
+                return {"project_id": project_id, "status": "not_generated", "observed_revision": None}
+            revision = revisions[0]
+        else:
+            revision = self.get_observed_revision(observed_revision_id)
+            if revision["project_id"] != project_id:
+                raise ValueError("observed revision does not belong to project")
+        ua_snapshot = self.get_understand_anything_snapshot(revision["ua_snapshot_id"])
+        code_snapshot = self.get_snapshot(revision["code_snapshot_id"])["snapshot"]
+        latest_full_id = next(
+            (item["snapshot"]["id"] for item in self.list_snapshots(project_id, 100)
+             if item["snapshot"].get("scope", "backend") == "full"),
+            None,
+        )
+        return {
+            "project_id": project_id,
+            "status": "current" if revision["code_snapshot_id"] == latest_full_id else "stale",
+            "code_snapshot": {
+                "id": code_snapshot["id"], "revision": code_snapshot["revision"],
+                "branch": code_snapshot["branch"], "dirty": code_snapshot["dirty"],
+                "scope": code_snapshot.get("scope", "backend"),
+            },
+            "ua_snapshot": {
+                "id": ua_snapshot["id"], "ua_graph_version": ua_snapshot["ua_graph_version"],
+                "ua_tool_revision": ua_snapshot["ua_tool_revision"],
+                "coverage": ua_snapshot["coverage"],
+            },
+            "observed_revision": revision,
+        }
+
+    def request_observation_expansion(
+        self, project_id: str, observed_revision_id: str, node_id: str, depth: int = 1,
+    ) -> dict[str, Any]:
+        revision = ObservedModelRevision.model_validate(self.get_observed_revision(observed_revision_id))
+        if revision.project_id != project_id:
+            raise ValueError("observed revision does not belong to project")
+        request = build_expansion_request(revision, node_id=node_id, depth=depth, created_at=_now())
+        with self.connection() as db:
+            existing = db.execute(
+                "SELECT request_json FROM observation_expansion_requests WHERE id=?", (request.id,),
+            ).fetchone()
+            if existing is not None:
+                return {"duplicate": True, "request": json.loads(existing["request_json"])}
+            db.execute(
+                """INSERT INTO observation_expansion_requests(
+                   id,project_id,base_observed_revision_id,ua_snapshot_id,target_observed_node_id,
+                   depth,status,result_observed_revision_id,request_json,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (request.id, request.project_id, request.base_observed_revision_id,
+                 request.ua_snapshot_id, request.target_observed_node_id, request.depth,
+                 request.status, request.result_observed_revision_id, request.model_dump_json(),
+                 request.created_at, request.updated_at),
+            )
+        return {"duplicate": False, "request": request.model_dump(mode="json")}
+
+    def get_observation_expansion(self, request_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT request_json FROM observation_expansion_requests WHERE id=?", (request_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown observation expansion request {request_id!r}")
+        return json.loads(row["request_json"])
+
+    def list_observation_expansions(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT request_json FROM observation_expansion_requests
+                   WHERE project_id=? ORDER BY created_at DESC LIMIT ?""",
+                (project_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [json.loads(row["request_json"]) for row in rows]
+
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with self.connection() as db:
             row = db.execute("SELECT * FROM alignment_findings WHERE id=?", (finding_id,)).fetchone()
@@ -902,6 +1113,18 @@ class CoIntentRepository:
 
     def _write_snapshot_asset(self, snapshot: RepositorySnapshot) -> None:
         _atomic_json(self._project_dir(snapshot.project_id) / "snapshots" / f"{snapshot.id}.json", snapshot.model_dump())
+
+    def _write_ua_snapshot_asset(self, snapshot: UnderstandAnythingSnapshot) -> None:
+        _atomic_json(
+            self._project_dir(snapshot.project_id) / "understand-anything" / f"{snapshot.id}.json",
+            snapshot.model_dump(mode="json", by_alias=True),
+        )
+
+    def _write_observed_revision_asset(self, revision: ObservedModelRevision) -> None:
+        _atomic_json(
+            self._project_dir(revision.project_id) / "observed" / f"{revision.id}.json",
+            revision.model_dump(mode="json"),
+        )
 
 
 def _proposal(row: sqlite3.Row) -> dict[str, Any]:

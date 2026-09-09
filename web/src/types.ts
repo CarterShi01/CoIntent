@@ -151,3 +151,74 @@ export interface ChangeSet {
   created_at: string;
   updated_at: string;
 }
+
+export interface EvidenceBinding {
+  ua_node_id: string;
+  path: string;
+  start_line: number | null;
+  end_line: number | null;
+  source_digest: string;
+  origin: "ua_structural" | "ua_semantic";
+  structural_ua_node_ids: string[];
+}
+
+export interface ClaimBinding {
+  id: string;
+  subject_kind: "responsibility" | "workflow_edge" | "capability";
+  subject_id: string;
+  predicate: "implemented_by" | "ordered_by" | "summarized_by";
+  ua_node_ids: string[];
+  evidence: EvidenceBinding[];
+  support: "direct" | "aggregated" | "inferred";
+  explanation: string;
+}
+
+export interface ObservedCapability {
+  id: string;
+  name: string;
+  description: string;
+  responsibility_id: string;
+  evidence_count: number;
+}
+
+export interface ObservedRevision {
+  schema_version: "cointent.observed-model/0.4";
+  id: string;
+  project_id: string;
+  code_snapshot_id: string;
+  ua_snapshot_id: string;
+  parent_revision_id: string | null;
+  refinement_of_node_id: string | null;
+  projector_version: string;
+  capabilities: ObservedCapability[];
+  responsibilities: Responsibility[];
+  bindings: ClaimBinding[];
+  diagnostics: Array<{ kind: string; subject_id: string | null; message: string }>;
+  content_digest: string;
+  created_at: string;
+}
+
+export interface ObservationCoordinate {
+  project_id: string;
+  status: "not_generated" | "current" | "stale";
+  code_snapshot?: {
+    id: string;
+    revision: string;
+    branch: string;
+    dirty: boolean;
+    scope: "full";
+  };
+  ua_snapshot?: {
+    id: string;
+    ua_graph_version: string;
+    ua_tool_revision: string;
+    coverage: {
+      code_snapshot_files: number;
+      ua_located_nodes: number;
+      ua_unlocated_nodes: number;
+      domain_nodes: number;
+      evidence_backed_domain_nodes: number;
+    };
+  };
+  observed_revision: ObservedRevision | null;
+}

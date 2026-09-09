@@ -22,12 +22,20 @@ def parser() -> argparse.ArgumentParser:
     scan.add_argument("--project-id", required=True)
     scan.add_argument("--name")
     scan.add_argument("--include-untracked", action="store_true")
+    scan.add_argument("--scope", choices=("backend", "full"), default="backend")
     scan.add_argument("--seed-idea-factory", action="store_true")
     scan.add_argument("--export")
 
     load = commands.add_parser("import-fixture", help="idempotently import a snapshot and model fixture")
     load.add_argument("--snapshot", required=True)
     load.add_argument("--model", required=True)
+
+    ua = commands.add_parser("import-understand-anything", help="operator-only import of completed UA graph JSON")
+    ua.add_argument("--project-id", required=True)
+    ua.add_argument("--code-snapshot-id", required=True)
+    ua.add_argument("--knowledge-graph", required=True)
+    ua.add_argument("--domain-graph")
+    ua.add_argument("--ua-tool-revision", required=True)
 
     export = commands.add_parser("export-model", help="export the current accepted model as JSON")
     export.add_argument("--project-id", required=True)
@@ -48,6 +56,8 @@ def main(argv: list[str] | None = None) -> None:
         _scan(args)
     elif args.command == "import-fixture":
         _import_fixture(args)
+    elif args.command == "import-understand-anything":
+        _import_understand_anything(args)
     elif args.command == "serve":
         if args.host not in {"127.0.0.1", "localhost", "::1"} and not os.environ.get("COINTENT_MCP_TOKEN"):
             raise SystemExit("COINTENT_MCP_TOKEN is required for a non-loopback server")
@@ -70,7 +80,9 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _scan(args: argparse.Namespace) -> None:
-    snapshot = scan_repository(args.repository, args.project_id, include_untracked=args.include_untracked)
+    snapshot = scan_repository(
+        args.repository, args.project_id, include_untracked=args.include_untracked, scope=args.scope,
+    )
     repository = CoIntentRepository(args.database)
     repository.ensure_project(args.project_id, args.name or args.project_id.replace("-", " ").title(), snapshot.repository)
     result = repository.ingest_snapshot(args.project_id, snapshot.model_dump())
@@ -86,6 +98,7 @@ def _scan(args: argparse.Namespace) -> None:
     delta = result["diff"]
     print(json.dumps({
         "snapshot": snapshot.id, "revision": snapshot.revision,
+        "scope": snapshot.scope,
         "duplicate": result["duplicate"],
         "artifacts": len(snapshot.artifacts), "relations": len(snapshot.relations),
         "delta": {"added": len(delta["added"]), "modified": len(delta["modified"]),
@@ -110,3 +123,22 @@ def _import_fixture(args: argparse.Namespace) -> None:
     repository.record_mapping_revision(model.project_id, snapshot_id=snapshot.id)
     repository.dismiss_non_backend_findings(model.project_id)
     print(json.dumps(repository.overview(model.project_id), indent=2))
+
+
+def _import_understand_anything(args: argparse.Namespace) -> None:
+    knowledge = json.loads(Path(args.knowledge_graph).read_text(encoding="utf-8"))
+    domain = None
+    if args.domain_graph:
+        domain = json.loads(Path(args.domain_graph).read_text(encoding="utf-8"))
+    result = CoIntentRepository(args.database).import_understand_anything(
+        args.project_id, args.code_snapshot_id, args.ua_tool_revision, knowledge, domain,
+    )
+    revision = result["observed_revision"]
+    print(json.dumps({
+        "duplicate": result["duplicate"],
+        "ua_snapshot_id": result["ua_snapshot"]["id"],
+        "observed_revision_id": revision["id"],
+        "observed_responsibilities": len(revision["responsibilities"]),
+        "observed_capabilities": len(revision["capabilities"]),
+        "diagnostics": len(revision["diagnostics"]),
+    }, indent=2))

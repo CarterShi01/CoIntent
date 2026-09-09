@@ -52,3 +52,9 @@ def test_scanner_filters_frontend_and_cross_cutting_noise(tmp_path: Path) -> Non
     assert "web/src/App.tsx" not in paths
     assert "frontend/api.py" not in paths
     assert "studio/server/app.py" not in paths
+
+    full = scan_repository(tmp_path, "demo", scope="full")
+    full_paths = {item.path for item in full.artifacts}
+    assert full.scope == "full"
+    assert "web/src/App.tsx" in full_paths
+    assert "frontend/api.py" in full_paths

@@ -10,7 +10,7 @@ import subprocess
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,6 +41,7 @@ class Artifact(ScanRecord):
     component: str
     sha256: str
     size: int
+    line_count: int | None = None
 
 
 class CodeRelation(ScanRecord):
@@ -58,20 +59,24 @@ class RepositorySnapshot(ScanRecord):
     branch: str
     dirty: bool
     captured_at: str
+    scope: Literal["backend", "full"] = "backend"
     artifacts: list[Artifact] = Field(default_factory=list)
     relations: list[CodeRelation] = Field(default_factory=list)
     entrypoints: dict[str, str] = Field(default_factory=dict)
     language_counts: dict[str, int] = Field(default_factory=dict)
 
 
-def scan_repository(root: str | Path, project_id: str, *, include_untracked: bool = False) -> RepositorySnapshot:
+def scan_repository(
+    root: str | Path, project_id: str, *, include_untracked: bool = False,
+    scope: Literal["backend", "full"] = "backend",
+) -> RepositorySnapshot:
     base = Path(root).resolve()
     if not (base / ".git").exists():
         raise ValueError(f"not a Git working tree: {base}")
     paths = _git_paths(base, include_untracked=include_untracked)
     artifacts: list[Artifact] = []
     for relative in paths:
-        if _ignored(relative):
+        if scope == "backend" and _ignored(relative):
             continue
         path = base / relative
         if not path.is_file():
@@ -84,6 +89,7 @@ def scan_repository(root: str | Path, project_id: str, *, include_untracked: boo
             component=_component(relative),
             sha256=hashlib.sha256(payload).hexdigest(),
             size=len(payload),
+            line_count=payload.count(b"\n") + (1 if payload and not payload.endswith(b"\n") else 0),
         ))
     artifacts.sort(key=lambda item: item.path)
     relations = _relations(base, artifacts)
@@ -91,6 +97,7 @@ def scan_repository(root: str | Path, project_id: str, *, include_untracked: boo
     revision = _git(base, "rev-parse", "HEAD")
     identity = hashlib.sha256(json.dumps({
         "revision": revision,
+        "scope": scope,
         "artifacts": [(item.path, item.sha256) for item in artifacts],
         "relations": [(item.source, item.target, item.kind) for item in relations],
     }, separators=(",", ":")).encode()).hexdigest()[:20]
@@ -102,6 +109,7 @@ def scan_repository(root: str | Path, project_id: str, *, include_untracked: boo
         branch=_git(base, "branch", "--show-current", required=False) or "detached",
         dirty=bool(_git(base, "status", "--porcelain", "--untracked-files=no", required=False)),
         captured_at=datetime.now(UTC).isoformat(),
+        scope=scope,
         artifacts=artifacts,
         relations=relations,
         entrypoints=entrypoints,

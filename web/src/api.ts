@@ -1,6 +1,6 @@
 import type {
   AlignmentBaseline, ChangeSet, DesignVersion, Finding, ModelResponse,
-  OverviewResponse, Project, Proposal,
+  ObservationCoordinate, OverviewResponse, Project, Proposal,
 } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -37,6 +37,10 @@ export async function loadWorkspace(projectId: string, designVersion?: number) {
     model, overview, versions: versions.versions, baseline,
     findings: findings.findings, proposals: proposals.proposals, changeSets: changeSets.change_sets,
   };
+}
+
+export function fetchObservation(projectId: string): Promise<ObservationCoordinate> {
+  return call(`/api/v1/observation?${new URLSearchParams({ project_id: projectId })}`);
 }
 
 export interface SessionState {
