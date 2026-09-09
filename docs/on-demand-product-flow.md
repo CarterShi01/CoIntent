@@ -22,7 +22,7 @@ CURRENT TRUTH
 Code → CodeSnapshot → Understand Anything → ObservedModelRevision
 
 TARGET DRAWING
-Human intent → DesignRevision → semantic diff → implementation context → coding Agent
+Human intent → expected functions → target structure graph → review → semantic diff → implementation context → coding Agent
 
 OPTIONAL LATER COMPARISON
 Historical DesignRevision ↔ later ObservedModelRevision
@@ -48,8 +48,9 @@ One Agent response must not dump the complete model. It returns the amount visib
 - a bounded evidence summary and the exact observation coordinate;
 - continuation/focus identifiers for deliberate descent.
 
-Grandchildren and unrelated branches require another call. Web and Agent therefore share the same disclosure
-budget and navigation model.
+Grandchildren and unrelated branches require another call. The CoIntent System view and Agent therefore share
+the same semantic disclosure budget and navigation model. The human-only UA Implementation map remains a richer
+visual code explorer.
 
 ### 2.2 Design structure before code
 
@@ -59,8 +60,9 @@ Design begins only after explicit user intent such as “先设计结构，不�
 refresh current understanding
   → require the latest valid root Observation
   → create an independent target workspace from that exact baseline
-  → revise expected functions and target Responsibilities through conversation
-  → review the target one level at a time in web or Agent
+  → revise expected functions and the target structure graph through conversation
+  → compose target Responsibilities, Workflows, contracts, and expected-function mappings
+  → review the complete target graph one level at a time in web or Agent
   → preview design-version or target-versus-baseline diff
   → user confirms “按这个结构实现”
   → freeze that DesignRevision and create an implementation context
@@ -109,18 +111,19 @@ The UI exposes product verbs, not lifecycle machinery:
 
 | Tab | Primary actions |
 |---|---|
-| Understand current | **Update understanding**, **open/down one level**, **view code evidence** |
+| Understand current | **Update understanding**, **open/down one semantic level**, **view evidence**, **open the UA Implementation map** |
 | Design future | **Start structure design**, **revise expected functions/structure**, **view diff**, **implement this design**, **compare a historical design with current** |
 
 “Implement this design” creates the immutable implementation context and hands it to the coding Agent. It does
 not change code itself, publish an Observation, or schedule later analysis. Job polling, snapshot import,
 projection, approval records, and cache recovery are implementation details rather than additional user actions.
 
-## 5. Public MCP operations
+## 5. Public Agent MCP operations
 
-MCP is the only business communication surface. The browser and conversational Agent use the same operations;
-the browser is a visual MCP client, not a second REST business API. Tool names and IDs remain invisible in the
-ordinary product language.
+CoIntent MCP is the only product-operation surface for conversational and coding Agents. The browser uses an
+authenticated HTTP application surface and directly embeds the read-only UA Dashboard. It does not load visual
+UA data through MCP. Browser and Agent surfaces share domain invariants and immutable coordinates without sharing
+one transport. Exact Dashboard behavior is specified in [the UA integration design](ua-dashboard-integration.md).
 
 ### Project context
 
@@ -183,6 +186,9 @@ One hidden `observation-pipeline` Role is available only to the trusted scanner/
 It may publish CodeSnapshot, UnderstandAnythingSnapshot, and ObservedModelRevision records. It is absent from
 the conversational capability graph.
 
+There is no UA Dashboard Role and no UA-specific MCP server. Agents read CoIntent's semantic current/design
+models; humans use the embedded UA frontend for full visual code-map exploration.
+
 Root Role instructions:
 
 1. inspect project state before selecting a coordinate;
@@ -237,5 +243,6 @@ revision. Finalization records the authenticated initiating principal and binds 
 - Starting design against a stale/refinement Observation fails with an actionable refresh requirement.
 - Current and design level reads never contain grandchildren.
 - An Agent cannot submit native graph content or mutate any observed identity.
+- Agent MCP discovery exposes no UA visual-dashboard or raw-graph Role.
 - Finalizing a design does not schedule a scan.
 - A later refresh publishes only from new code/UA artifacts; the historical target remains unchanged.

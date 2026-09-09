@@ -39,8 +39,9 @@ Implemented in the first working slice:
 - real-browser verification of current, refinement, atomic, parent-return, design, review/context-export,
   optional later comparison, and mobile flows.
 
-The immutable data primitives are implemented. The next slice is the compact MCP-only public surface and a
-persistent runner that invokes UA incrementally. The current CLI still imports externally completed UA JSON.
+The immutable data primitives are implemented. The next slice is the compact Agent MCP surface, authenticated
+browser HTTP surface, directly embedded UA Dashboard, and a persistent runner that invokes UA incrementally. The
+current CLI still imports externally completed UA JSON.
 
 ## 1. Target vertical loop
 
@@ -257,10 +258,11 @@ Every observed node carries one or more `EvidenceBinding` records. A semantic St
 
 ## 5. Public authority matrix for the on-demand surface
 
-The browser and conversational Agent are MCP clients. Their permissions differ by authenticated principal, not
-by transport or caller-supplied actor fields.
+The browser uses authenticated HTTP and the conversational Agent uses CoIntent MCP. Their permissions derive
+from authenticated principals rather than caller-supplied actor fields, and both enforce the same aggregate
+boundaries.
 
-| Operation | Human MCP principal | Agent MCP principal | Observation worker |
+| Operation | Browser human (HTTP) | Agent (MCP) | Observation worker |
 |---|---:|---:|---:|
 | List projects and inspect state | yes | yes | read |
 | Request an idempotent refresh | yes | yes | run |
@@ -272,8 +274,9 @@ by transport or caller-supplied actor fields.
 | Compare a historical design with current | yes | yes | read inputs |
 
 The hidden worker accepts a trusted job coordinate and completed UA artifacts; it never accepts a replacement
-graph from a business client. Public MCP methods accept identifiers, intent, and bounded navigation parameters,
-never native graph payloads.
+graph from a business client. Browser HTTP and public MCP methods accept identifiers, intent, and bounded
+navigation parameters, never native graph payloads. The directly embedded UA Dashboard receives only read-only
+artifact/source endpoints and exposes no Agent MCP Role.
 
 ## 6. Test fixtures
 
@@ -304,5 +307,9 @@ The project flag `observation_v04_enabled` remains false until Increment A passe
 The on-demand runner additionally must prove that an unchanged repository skips UA and domain work, a changed
 repository with valid UA state uses incremental `/understand`, a missing or invalid cache reports a full
 fallback, starting design refreshes the baseline first, and coding completion schedules no work.
+
+The UA Dashboard release gate is defined in [the integration design](ua-dashboard-integration.md): exact
+snapshot/source delivery, direct HTTP loading, forward/reverse ImplementationRef focus, and absence of UA MCP or
+graph-mutation controls must pass before the embedded view is enabled.
 
 Rollback hides the 0.4 routes and returns to legacy Design. It never converts an observed revision into a 0.3 editable model.

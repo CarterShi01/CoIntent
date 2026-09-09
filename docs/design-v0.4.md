@@ -9,6 +9,8 @@
 > governs when analysis runs, how much graph an Agent reads, the compact public Role graph, and the optional
 > nature of later design-versus-implementation comparison. Earlier lifecycle detail below remains useful as
 > domain and audit design, but must not be interpreted as an always-on or automatically advancing workflow.
+> [UA Dashboard integration](ua-dashboard-integration.md) defines the directly embedded code-map view, browser
+> HTTP boundary, ImplementationRef contract, and bidirectional semantic/source focus behavior.
 
 ## 1. Executive decision
 
@@ -52,8 +54,8 @@ The only legal bridges between them are:
 
 1. create a target design from a named observed baseline;
 2. copy an observed node into a target draft while preserving its origin reference;
-3. export an approved semantic diff for implementation;
-4. compare a later observed graph with the approved target after code changes.
+3. finalize the reviewed target graph and semantic diff as implementation context;
+4. compare a historical target with a later user-requested observed graph.
 
 An instruction from a human can never directly mutate an observed graph.
 
@@ -686,7 +688,7 @@ Authority is enforced by capability boundaries, not Agent instructions alone:
 
 | Principal/capability | Request refresh | Publish observation | Read one level | Revise design | Finalize implementation context |
 |---|---:|---:|---:|---:|---:|
-| human MCP principal | yes | no API | yes | yes | yes |
+| browser human (authenticated HTTP) | yes | no API | yes | yes | yes |
 | Agent MCP principal | yes | no API | yes | scoped proposal | after explicit user instruction |
 | observation pipeline | execute | yes | read | no | no |
 
@@ -723,11 +725,13 @@ must be rebased before finalization when its baseline is no longer current.
 - Implementation-context creation failure creates no partial bundle; asset creation is atomic.
 - Optional comparison uncertainty never mutates the historical design or current observation.
 
-## 7. MCP-only public surface
+## 7. Agent MCP public surface
 
-MCP is the only target business transport for both the browser and conversational Agent. The public capability
-graph is deliberately smaller than the persisted aggregates. Exact contracts and Role instructions are
-normative in [the on-demand product-flow specification](on-demand-product-flow.md).
+MCP is the product-operation transport for conversational and coding Agents. The browser uses authenticated HTTP
+for the application, UA artifacts, and exact-snapshot source. Both surfaces enforce the same aggregate and
+coordinate rules without sharing one transport. The Agent capability graph is deliberately smaller than the
+persisted aggregates. Exact contracts and Role instructions are normative in
+[the on-demand product-flow specification](on-demand-product-flow.md).
 
 ### 7.1 Project context
 
@@ -766,8 +770,8 @@ The default root contains only `project-context`, `understand-current`, and `des
 principal. Broader 0.3 tools remain on a separate compatibility root during migration.
 
 Refresh requests return a job resource and report `unchanged | incremental | full`. The UI may poll or subscribe
-without changing the operation contract. Browser-only REST business endpoints are migration compatibility, not
-the target architecture.
+through the authenticated HTTP application surface. The embedded UA Dashboard has no MCP Role and cannot publish
+or repair graph content.
 
 ## 8. Frontend application architecture
 
@@ -778,9 +782,15 @@ AppShell
 ├── ProjectHeader
 ├── ProcessTabs
 ├── UnderstandRoute
-│   ├── ObservedCapabilityRail
-│   ├── ObservedGraphWorkspace
-│   └── EvidenceDrawer
+│   ├── UnderstandSubviewTabs
+│   ├── SystemView
+│   │   ├── ObservedCapabilityRail
+│   │   ├── ObservedGraphWorkspace
+│   │   └── EvidenceDrawer
+│   └── UaImplementationMap
+│       ├── CoordinateHeader
+│       ├── SemanticReturnPanel
+│       └── PinnedUaViewerIframe
 └── DesignRoute
     ├── ExpectedFeatureRail
     ├── TargetGraphWorkspace
@@ -804,14 +814,19 @@ type GraphMode =
 
 Do not infer mode from the presence of click handlers or CSS classes. Exhaustive types should make an observed edit action impossible to wire without a compiler error.
 
-Data loading is split and uses the same MCP operations as the conversational Agent:
+Browser data loading is split over authenticated HTTP while the conversational Agent uses the MCP operations in
+section 7:
 
-- Understand route calls `read-current-level` and never loads descendants beyond the visible level.
-- Design route calls `read-design-level`, `revise-structure-design`, and `diff-structure-design`.
+- System view loads the same bounded current read model exposed by `read-current-level`.
+- Design view loads and mutates the same target aggregates exposed by the `design-future` Role.
+- Implementation map creates a scoped viewer session and loads immutable UA/source assets directly over HTTP.
+- No browser graph or source request is routed through MCP.
 - Do not repeat the current all-in-one `loadWorkspace` request fan-out on every tab or version change.
 - Cache immutable revisions by ID. Latest-coordinate endpoints may be refreshed; content-addressed revision responses do not need refetching.
 
-Browser state such as open drawer, pan/zoom, selected node, and preferred layout stays local. Semantic operations always round-trip through the server and return the resulting DesignRevision.
+Browser state such as open drawer, pan/zoom, selected node, and preferred layout stays local. Semantic operations
+round-trip through authenticated HTTP and return the resulting DesignRevision. UA viewport/layout state remains
+inside the iframe; only the pinned coordinate and selected native node cross the host/viewer bridge.
 
 ## 9. Migration from 0.3
 
@@ -867,6 +882,16 @@ Existing 0.3 data has ambiguous provenance and must not be relabeled as observed
 - Create implementation context after explicit user instruction without scheduling post-coding analysis.
 - Keep historical-design versus later-observation comparison optional and read-only.
 - Retire mixed 0.3 mutation tools once no active client depends on them.
+
+### Phase 7 — embed the UA implementation map
+
+- Package the official pinned UA Dashboard as an isolated read-only microfrontend.
+- Add authenticated HTTP viewer sessions bound to exact Observation/UA/code coordinates.
+- Serve immutable UA artifacts and exact-snapshot source without routing browser data through MCP.
+- Add first-class primary/supporting ImplementationRefs.
+- Add forward focus, reverse semantic navigation, and baseline-design inspection.
+- Expose no UA MCP server, graph-repair control, scan control, or second Agent chat surface.
+- Follow the delivery and acceptance contract in [the UA Dashboard integration design](ua-dashboard-integration.md).
 
 Rollout uses a per-project feature flag until an observed revision and a migrated design workspace are both available. Rollback returns to read-only 0.3; it must not write 0.4 objects back into 0.3 tables.
 
@@ -939,6 +964,8 @@ The 0.4 redesign is complete when:
 11. repeat analysis uses UA incremental mode whenever valid prior state exists, while unchanged code spends no UA tokens;
 12. coding completion triggers no scan; later comparison happens only after another user-requested refresh;
 13. legacy 0.3 models remain auditable but are never silently certified as observed truth.
+14. users can open the directly embedded UA Dashboard at an exact implementation reference and return from a UA
+    node to every mapped current semantic subject without crossing snapshot coordinates.
 
 ## 12. Product decisions captured by this design
 
@@ -948,6 +975,9 @@ The 0.4 redesign is complete when:
 - Desired and observed graphs share rendering semantics but not storage or write paths.
 - Understand Anything is the single 0.4 code-map source; its immutable imported artifact is the boundary beneath CoIntent projection.
 - The UA graph appears as drillable evidence, not as the main user-facing graph.
+- The official pinned UA Dashboard is embedded directly under Understand current → Implementation map.
+- Browser UA graph/source loading uses authenticated HTTP; Agent product operations use CoIntent MCP.
+- CoIntent provides no UA-specific MCP Role or dependency on a UA MCP server.
 - Observed graph expansion is a generation request; target graph expansion is a design operation.
 - Human corrections to observed interpretation become issues and regeneration, never direct edits.
 - Implementation handoff produces a semantic constraint bundle, not a source patch.

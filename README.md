@@ -44,9 +44,9 @@ Most code maps foreground files, classes, functions, imports, services, or deplo
 The web workspace has two top-level modes with the same three-area grammar:
 
 1. **Understand current** — generated from a full Git snapshot and Understand Anything artifacts; always read-only.
-2. **Design future** — expected functions and target Responsibilities; human-owned and independently versioned.
+2. **Design future** — expected functions and a complete target Responsibility/Workflow structure graph; human-owned and independently versioned.
 
-Both modes use a function list, one semantic graph level at a time, and a detail/evidence inspector. An absent observation produces an explicit generation state; a legacy design is never displayed as current code.
+Both modes use a function list, one semantic graph level at a time, and a detail/evidence inspector. An absent observation produces an explicit generation state; a legacy design is never displayed as current code. Understand current contains a default CoIntent **System view** and a secondary **Implementation map** that directly embeds the pinned Understand Anything Dashboard for code-level exploration.
 
 Agent reads follow the same disclosure budget as the browser: one function level, one selected Responsibility,
 its direct children and local edges, plus bounded evidence. Deeper descendants require an explicit follow-up.
@@ -56,10 +56,11 @@ semantic diff constrains coding, but the drawing is never promoted into current 
 Coding completion does not automatically run a scan. The next request to understand or design refreshes the
 real code-derived graph. Comparing that later graph with a historical drawing is optional and read-only.
 
-MCP is the sole target business surface for both the browser and conversational Agent. The compact public Role
-graph has `project-context`, `understand-current`, and `design-future`; a hidden service Role owns native UA
-publication. Ordinary callers may request a refresh but can never upload graph content. The currently shipped
-REST and broader 0.3 tools remain migration surfaces until this compact contract is implemented.
+The browser uses authenticated HTTP for CoIntent pages, immutable UA artifacts, exact-snapshot source, and the
+embedded UA Dashboard. Conversational and coding Agents use CoIntent MCP. No UA MCP server is required or
+exposed. The compact Agent Role graph has `project-context`, `understand-current`, and `design-future`; a hidden
+service Role owns native UA publication. Ordinary callers may request a refresh but can never upload graph
+content.
 
 The scanner only records deterministic repository facts. An Agent interprets those facts and stages semantic changes; observed code never silently becomes accepted design truth.
 
@@ -106,7 +107,7 @@ The current CLI imports completed UA artifacts; the on-demand runner is the next
 run uses `/understand --full`; subsequent changed runs must use Understand Anything's default incremental mode,
 and unchanged code skips both UA and domain analysis. A complete imported graph does not imply full recomputation.
 
-## MCP capabilities
+## Agent MCP capabilities
 
 The canonical public 0.4 surface is intentionally small:
 
@@ -133,9 +134,9 @@ The Contexture graph groups typed tools and four method Skills under:
   decisions are intentionally absent;
 - `history-and-portability` — semantic diffs and portable 0.3 exports.
 
-For the target Streamable HTTP MCP surface, human and Agent principals use distinct scopes. Tool implementations
-derive authorship from Contexture's authenticated principal and never trust a caller-supplied `actor`. Secrets are
-deployment environment variables and are never part of the repository.
+Agent principals use explicit Streamable HTTP MCP scopes. Browser users authenticate separately for the HTTP
+application surface. Tool implementations derive authorship from Contexture's authenticated principal and never
+trust a caller-supplied `actor`. Secrets are deployment environment variables and are never part of the repository.
 
 ## Persistence
 
@@ -172,6 +173,7 @@ npm --prefix web run build
 
 - [0.4 detailed design](docs/design-v0.4.md)
 - [on-demand product flow and MCP surface](docs/on-demand-product-flow.md)
+- [Understand Anything Dashboard integration](docs/ua-dashboard-integration.md)
 - [Understand Anything decision](docs/adr-0001-codemap-engine.md)
 - [0.4 execution path](docs/implementation-v0.4.md)
 - [0.3 detailed design](docs/design-v0.3.md)
@@ -186,4 +188,4 @@ CoIntent pins Contexture to the exact latest upstream `master` commit available 
 
 ## Scope
 
-Version 0.4 has delivered the trusted code → UA artifact → observed structure path, evidence-bounded recursive expansion, independent target-design workspaces, semantic implementation bundles, and later-observation comparison primitives. The next slice replaces the broad migration-era surface with the compact on-demand MCP contract and adds a persistent runner that exercises Understand Anything incrementally. Production Idea Factory UA coverage review and rollout remain release work. Infrastructure topology remains out of scope.
+Version 0.4 has delivered the trusted code → UA artifact → observed structure path, evidence-bounded recursive expansion, independent target-design workspaces, semantic implementation bundles, and later-observation comparison primitives. The next slice adds the compact Agent MCP contract, persistent incremental UA runner, and directly embedded UA Dashboard with bidirectional ImplementationRef focus. Production Idea Factory UA coverage review and rollout remain release work. Infrastructure topology remains out of scope.

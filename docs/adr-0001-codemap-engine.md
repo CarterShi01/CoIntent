@@ -2,7 +2,7 @@
 
 **Status:** accepted  
 **Date:** 2026-09-09  
-**Related design:** [CoIntent 0.4 detailed design](design-v0.4.md)
+**Related design:** [CoIntent 0.4 detailed design](design-v0.4.md), [UA Dashboard integration](ua-dashboard-integration.md)
 
 ## Context
 
@@ -88,6 +88,10 @@ The intended production runner:
 
 The browser and conversational Agent may request a scan job later, but neither can upload replacement graph content or call a graph-upsert API.
 
+CoIntent directly embeds the pinned UA Dashboard as a read-only browser microfrontend. Browser graph/source
+loading uses authenticated HTTP against immutable CoIntent coordinates. Agent product interaction remains on
+CoIntent MCP; no official or community UA MCP server is required.
+
 Analysis is on demand. It starts only when a user asks to understand the current system or starts a
 structure-first design session. Coding completion does not schedule a scan. The next understanding or design
 request performs the refresh.
@@ -131,7 +135,7 @@ These limitations must appear as coverage and evidence states. They must not be 
 - cross-engine entity reconciliation or confidence merging;
 - engine selection in project settings;
 - generalized analyzer capability negotiation;
-- direct embedding or forking of UA's dashboard UI.
+- reimplementation of UA's Dashboard graph, search, path, file, or source-viewer features.
 
 ## Acceptance spike
 
