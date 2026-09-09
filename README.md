@@ -4,7 +4,7 @@
 
 CoIntent is an Agent-native system with two explicit processes: understand the current program from code, and design the program humans want next. A product manager can begin with a plain-language capability and repeatedly drill into the structure that fulfills it. Concrete source locations remain linked as evidence without turning the primary view into a file or class diagram.
 
-The repository contains the working **0.3 design MVP** plus the first **0.4 observation vertical slice**. Version 0.4 imports one pinned code-map source—Understand Anything—into immutable, evidence-backed, read-only current-system revisions. It intentionally has no multi-engine adapter framework.
+The repository contains the working **0.3 design MVP** plus the complete **0.4 observation → target design → implementation verification vertical loop**. Version 0.4 imports one pinned code-map source—Understand Anything—into immutable, evidence-backed current-system revisions, generates bounded child refinements, clones an exact baseline into a separately versioned `des-*` target workspace, exports only human-approved semantic diffs, and compares a later code observation with that approved target before a human declares convergence. It intentionally has no multi-engine adapter framework.
 
 ## The model
 
@@ -101,6 +101,9 @@ The Contexture graph groups typed tools and four method Skills under:
 - `responsibility-model` — roots, focused inspection, cyclic path tracing, quality signals, and reviewed proposals;
 - `implementation-alignment` — backend snapshots, mappings, impact lookup, and findings;
 - `change-lifecycle` — traceable specification → model → code change sets;
+- `target-design` — separate target workspaces, typed design operations, review inspection, implementation
+  export inspection, and evidence-backed post-implementation comparison; human approval and convergence
+  decisions are intentionally absent;
 - `history-and-portability` — semantic diffs and portable 0.3 exports.
 
 For Streamable HTTP, humans authenticate with an OC-style signed `HttpOnly` session cookie while Agents use a separate MCP bearer token. Secrets are deployment environment variables and are never part of the repository.
@@ -115,7 +118,16 @@ projects/<project-id>/
 ├── design/v000001.json
 ├── snapshots/<snapshot-id>.json
 ├── understand-anything/<ua-snapshot-id>.json
-└── observed/<observed-revision-id>.json
+├── observed/<observed-revision-id>.json
+└── target-design/<workspace-id>/
+    ├── workspace.json
+    ├── revisions/<design-revision-id>.json
+    ├── operations/<operation-id>.json
+    ├── reviews/<review-id>.json
+    ├── approvals/<approval-id>.json
+    ├── exports/<implementation-bundle-id>.json
+    ├── verifications/<verification-report-id>.json
+    └── verification-decisions/<verification-decision-id>.json
 ```
 
 This gives the application reliable concurrency and query behavior while keeping its durable model portable and diffable.
@@ -144,4 +156,4 @@ CoIntent pins Contexture to the exact latest upstream `master` commit available 
 
 ## Scope
 
-Version 0.4 first delivers the trusted code → UA artifact → observed structure path and the hard separation between current understanding and future design. Recursive expansion, independent 0.4 design workspaces, semantic implementation bundles, and post-change verification follow the ordered execution plan. Infrastructure topology remains out of scope.
+Version 0.4 delivers the trusted code → UA artifact → observed structure path, evidence-bounded recursive expansion, independent target-design workspaces, human approval, semantic implementation bundles, later-observation verification, and human-only convergence decisions. Production Idea Factory UA coverage review and rollout remain release work. Infrastructure topology remains out of scope.

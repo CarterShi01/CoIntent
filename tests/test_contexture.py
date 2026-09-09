@@ -16,6 +16,13 @@ def test_contexture_graph_exposes_v03_agent_capabilities(tmp_path, monkeypatch) 
         "cointent/current-understanding/list-observed-revisions",
         "cointent/current-understanding/inspect-observed-revision",
         "cointent/current-understanding/request-observation-expansion",
+        "cointent/target-design/list-target-design-workspaces",
+        "cointent/target-design/inspect-target-design-workspace",
+        "cointent/target-design/create-target-design-workspace",
+        "cointent/target-design/apply-target-design-operations",
+        "cointent/target-design/list-target-design-operations",
+        "cointent/target-design/compare-implementation-to-target",
+        "cointent/target-design/inspect-verification-report",
         "cointent/specification/inspect-specification-tree",
         "cointent/responsibility-model/propose-design-patch",
         "cointent/responsibility-model/inspect-responsibility",
@@ -27,6 +34,13 @@ def test_contexture_graph_exposes_v03_agent_capabilities(tmp_path, monkeypatch) 
         "cointent/history-and-portability/export-design-version",
     } <= refs
     assert not any("import-understand-anything" in ref or "replace-observed" in ref for ref in refs)
+    assert not any(
+        value in refs for value in {
+            "cointent/target-design/approve-target-design",
+            "cointent/target-design/export-implementation-bundle",
+            "cointent/target-design/decide-verification",
+        }
+    )
     understanding = compiled.server().surface.tree.open("cointent/current-understanding")
     expansion_schema = {
         tool["name"]: tool["input_schema"] for tool in understanding["tools"]

@@ -193,6 +193,15 @@ class ObservedCapability(BaseModel):
     evidence_count: int
 
 
+class ObservationRefinement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requested_depth: int = Field(ge=1, le=3)
+    added_responsibilities: int = Field(ge=0)
+    evidence_bindings: int = Field(ge=0)
+    max_depth_reached: int = Field(ge=0)
+    truncated: bool = False
+
+
 class ObservedModelRevision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["cointent.observed-model/0.4"] = "cointent.observed-model/0.4"
@@ -207,6 +216,7 @@ class ObservedModelRevision(BaseModel):
     responsibilities: list[Responsibility] = Field(default_factory=list)
     bindings: list[ClaimBinding] = Field(default_factory=list)
     diagnostics: list[UADiagnostic] = Field(default_factory=list)
+    refinement: ObservationRefinement | None = None
     content_digest: str
     created_at: str
 
@@ -248,8 +258,9 @@ class ObservationExpansionRequest(BaseModel):
     target_ua_node_id: str
     depth: int = Field(ge=1, le=3)
     evidence_scope: list[EvidenceBinding]
-    status: Literal["queued", "completed", "failed"] = "queued"
+    status: Literal["queued", "completed", "atomic_at_current_evidence", "failed"] = "queued"
     result_observed_revision_id: str | None = None
+    message: str = ""
     created_at: str
     updated_at: str
 
@@ -264,7 +275,7 @@ def build_expansion_request(
     target = next((item for item in revision.responsibilities if item.id == node_id), None)
     if target is None:
         raise ValueError("expansion target is not part of the base observed revision")
-    identifier = _scoped_id("expansion", revision.id, node_id, str(depth), "ua-domain-v1")
+    identifier = _scoped_id("expansion", revision.ua_snapshot_id, node_id, str(depth), "ua-domain-v1")
     timestamp = created_at or datetime.now(UTC).isoformat()
     return ObservationExpansionRequest(
         id=identifier, project_id=revision.project_id,
@@ -277,6 +288,214 @@ def build_expansion_request(
         ),
         created_at=timestamp, updated_at=timestamp,
     )
+
+
+EXPANSION_EDGE_TYPES = frozenset({
+    "contains", "calls", "implements", "routes", "reads_from", "writes_to", "transforms",
+    "validates", "subscribes", "publishes", "triggers", "configures", "serves",
+})
+MAX_EXPANSION_NODES = 64
+
+
+def project_observed_expansion(
+    base_revision: ObservedModelRevision,
+    snapshot: UnderstandAnythingSnapshot,
+    code_snapshot: RepositorySnapshot,
+    *,
+    node_id: str,
+    depth: int = 1,
+    created_at: str | None = None,
+) -> ObservedModelRevision | None:
+    """Project a bounded structural refinement without accepting caller-authored graph data."""
+    if depth < 1 or depth > 3:
+        raise ValueError("expansion depth must be between 1 and 3")
+    if base_revision.ua_snapshot_id != snapshot.id or snapshot.code_snapshot_id != code_snapshot.id:
+        raise ValueError("expansion inputs do not share one immutable UA/code coordinate")
+    target = next((item for item in base_revision.responsibilities if item.id == node_id), None)
+    if target is None:
+        raise ValueError("expansion target is not part of the base observed revision")
+    target_binding = next(
+        item for item in base_revision.bindings
+        if item.subject_kind == "responsibility" and item.subject_id == node_id
+    )
+
+    graph = snapshot.knowledge_graph
+    nodes = {item.id: item for item in graph.nodes}
+    artifacts = {item.path: item for item in code_snapshot.artifacts}
+    outgoing: dict[str, list[tuple[str, str]]] = {}
+    contains: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        if edge.type not in EXPANSION_EDGE_TYPES:
+            continue
+        outgoing.setdefault(edge.source, []).append((edge.type, edge.target))
+        if edge.type == "contains":
+            contains.setdefault(edge.source, set()).add(edge.target)
+    for values in outgoing.values():
+        values.sort(key=lambda item: (item[0], item[1]))
+
+    structural_target = target.source_ids[0] if target.source_ids and target.source_ids[0] in nodes else None
+    if structural_target is not None:
+        initial = outgoing.get(structural_target, [])
+    else:
+        evidence_ids = {
+            structural_id
+            for evidence in target_binding.evidence
+            for structural_id in evidence.structural_ua_node_ids
+            if structural_id in nodes
+        }
+        anchors = _most_specific_nodes(evidence_ids, contains)
+        initial = [("evidence_anchor", native_id) for native_id in sorted(anchors)]
+
+    selected: dict[str, int] = {}
+    relation_from_parent: dict[str, str] = {}
+    frontier: list[tuple[str, str, int]] = [(kind, native_id, 1) for kind, native_id in initial]
+    truncated = False
+    while frontier:
+        relation, native_id, level = frontier.pop(0)
+        native = nodes.get(native_id)
+        if native is None or native.file_path is None or native.file_path not in artifacts:
+            continue
+        previous = selected.get(native_id)
+        if previous is not None and previous <= level:
+            continue
+        if len(selected) >= MAX_EXPANSION_NODES:
+            truncated = True
+            break
+        selected[native_id] = level
+        relation_from_parent.setdefault(native_id, relation)
+        if level < depth:
+            frontier.extend((kind, child_id, level + 1) for kind, child_id in outgoing.get(native_id, []))
+
+    if not selected:
+        return None
+
+    def observed_id(native_id: str) -> str:
+        return _scoped_id("obs-resp", snapshot.id, native_id)
+
+    children: dict[str, list[tuple[str, str]]] = {}
+    roots: list[tuple[str, str]] = []
+    selected_ids = set(selected)
+    if structural_target is not None:
+        roots = [(kind, child_id) for kind, child_id in initial if child_id in selected_ids]
+    else:
+        roots = [("evidence_anchor", native_id) for native_id in sorted(selected_ids) if selected[native_id] == 1]
+    for parent_id in sorted(selected_ids):
+        children[parent_id] = [
+            (kind, child_id) for kind, child_id in outgoing.get(parent_id, [])
+            if child_id in selected_ids and selected[child_id] == selected[parent_id] + 1
+        ]
+
+    responsibilities: list[Responsibility] = []
+    bindings: list[ClaimBinding] = [target_binding]
+    root_workflow = _structural_workflow(snapshot.id, node_id, roots, observed_id)
+    responsibilities.append(target.model_copy(update={"workflow": root_workflow}))
+
+    for native_id in sorted(selected_ids, key=lambda item: (selected[item], item)):
+        native = nodes[native_id]
+        evidence = _structural_evidence(native, artifacts[native.file_path])
+        workflow = _structural_workflow(snapshot.id, observed_id(native_id), children[native_id], observed_id)
+        responsibilities.append(Responsibility(
+            id=observed_id(native_id),
+            name=native.name,
+            description=native.summary or f"{native.type} discovered by Understand Anything.",
+            workflow=workflow,
+            status="accepted",
+            source_ids=[native_id],
+        ))
+        bindings.append(ClaimBinding(
+            id=_scoped_id("obs-binding", snapshot.id, observed_id(native_id)),
+            subject_kind="responsibility",
+            subject_id=observed_id(native_id),
+            predicate="implemented_by",
+            ua_node_ids=[native_id],
+            evidence=[evidence],
+            support="direct",
+            explanation=(
+                f"Structural refinement follows the pinned UA {relation_from_parent[native_id]} relation "
+                "and resolves to the captured source file."
+            ),
+        ))
+
+    refinement = ObservationRefinement(
+        requested_depth=depth,
+        added_responsibilities=len(selected_ids),
+        evidence_bindings=len(selected_ids),
+        max_depth_reached=max(selected.values()),
+        truncated=truncated,
+    )
+    payload = {
+        "project_id": snapshot.project_id,
+        "code_snapshot_id": snapshot.code_snapshot_id,
+        "ua_snapshot_id": snapshot.id,
+        "parent_revision_id": base_revision.id,
+        "refinement_of_node_id": node_id,
+        "projector_version": "ua-domain-v1",
+        "responsibilities": [item.model_dump(mode="json") for item in responsibilities],
+        "bindings": [item.model_dump(mode="json") for item in bindings],
+        "refinement": refinement.model_dump(mode="json"),
+    }
+    digest = _digest(payload)
+    return ObservedModelRevision(
+        id=f"observed-{digest[:24]}",
+        project_id=snapshot.project_id,
+        code_snapshot_id=snapshot.code_snapshot_id,
+        ua_snapshot_id=snapshot.id,
+        parent_revision_id=base_revision.id,
+        refinement_of_node_id=node_id,
+        responsibilities=responsibilities,
+        bindings=sorted(bindings, key=lambda item: item.id),
+        refinement=refinement,
+        content_digest=digest,
+        created_at=created_at or datetime.now(UTC).isoformat(),
+    )
+
+
+def _structural_workflow(
+    snapshot_id: str,
+    owner_id: str,
+    children: list[tuple[str, str]],
+    observed_id: Any,
+) -> Workflow | None:
+    if not children:
+        return None
+    occurrences = [WorkflowNode(
+        id=_scoped_id("obs-occ", snapshot_id, owner_id, child_id),
+        responsibility_id=observed_id(child_id),
+        note="Source anchor" if relation == "evidence_anchor" else f"UA relation: {relation}",
+    ) for relation, child_id in children]
+    # Structural UA relationships express composition/dependency, not execution order.
+    return Workflow(entry_node_ids=[item.id for item in occurrences], nodes=occurrences, edges=[])
+
+
+def _structural_evidence(node: UANode, artifact: Any) -> EvidenceBinding:
+    start, end = node.line_range or (None, None)
+    return EvidenceBinding(
+        ua_node_id=node.id,
+        path=node.file_path,
+        start_line=start,
+        end_line=end,
+        source_digest=artifact.sha256,
+        origin="ua_structural",
+        structural_ua_node_ids=[node.id],
+    )
+
+
+def _most_specific_nodes(node_ids: set[str], contains: dict[str, set[str]]) -> set[str]:
+    """Drop evidence anchors that merely contain a more specific selected anchor."""
+    result = set(node_ids)
+    for candidate in node_ids:
+        frontier = list(contains.get(candidate, set()))
+        seen: set[str] = set()
+        while frontier:
+            child = frontier.pop()
+            if child in seen:
+                continue
+            seen.add(child)
+            if child in node_ids:
+                result.discard(candidate)
+                break
+            frontier.extend(contains.get(child, set()))
+    return result
 
 
 def build_ua_snapshot(

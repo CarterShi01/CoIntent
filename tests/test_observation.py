@@ -180,9 +180,32 @@ def test_repository_import_is_idempotent_and_observation_is_read_only(tmp_path: 
     )
     assert expansion["duplicate"] is False
     assert repeated["duplicate"] is True
-    assert expansion["request"]["status"] == "queued"
+    assert expansion["request"]["status"] == "completed"
+    assert repeated["request"] == expansion["request"]
     assert expansion["request"]["evidence_scope"]
     assert "nodes" not in expansion["request"] and "edges" not in expansion["request"]
+    child = repository.get_observed_revision(expansion["request"]["result_observed_revision_id"])
+    assert child["parent_revision_id"] == first["observed_revision"]["id"]
+    assert child["refinement_of_node_id"] == target
+    assert child["refinement"] == {
+        "requested_depth": 1,
+        "added_responsibilities": 1,
+        "evidence_bindings": 1,
+        "max_depth_reached": 1,
+        "truncated": False,
+    }
+    assert len(child["responsibilities"]) == 2
+    assert repository.observation_coordinate("demo")["observed_revision"]["id"] == first["observed_revision"]["id"]
+    assert repository.observation_coordinate("demo", child["id"])["observed_revision"]["id"] == child["id"]
+    assert len(repository.list_observed_revisions("demo")) == 2
+    assert (tmp_path / "projects/demo/observed" / f"{child['id']}.json").is_file()
+
+    structural_child = next(item for item in child["responsibilities"] if item["id"] != target)
+    atomic = repository.request_observation_expansion(
+        "demo", child["id"], structural_child["id"], depth=1,
+    )
+    assert atomic["request"]["status"] == "atomic_at_current_evidence"
+    assert atomic["request"]["result_observed_revision_id"] is None
 
     with pytest.raises(ValueError, match="not part of"):
         repository.request_observation_expansion(

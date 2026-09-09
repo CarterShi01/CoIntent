@@ -10,6 +10,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from .design import (
+    DesignOperation,
+    DesignOperationRecord,
+    DesignRevision,
+    DesignWorkspace,
+    apply_design_operations,
+    seed_design_from_observation,
+)
+from .delivery import (
+    DesignApproval,
+    DesignReview,
+    ImplementationChangeBundle,
+    VerificationDecision,
+    VerificationReport,
+    build_approval,
+    build_design_review,
+    build_implementation_bundle,
+    build_verification_decision,
+    build_verification_report,
+)
 from .models import ImplementationLink, ModelPatch, ProjectModel, apply_model_patch, semantic_diff
 from .observation import (
     ObservationExpansionRequest,
@@ -18,6 +38,7 @@ from .observation import (
     UnderstandAnythingSnapshot,
     build_ua_snapshot,
     build_expansion_request,
+    project_observed_expansion,
     project_observed_model,
 )
 from .scanner import RepositorySnapshot, is_backend_logic_candidate, snapshot_diff
@@ -108,6 +129,55 @@ class CoIntentRepository:
                     status TEXT NOT NULL, result_observed_revision_id TEXT REFERENCES observed_model_revisions(id),
                     request_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS design_workspaces_v04 (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    base_observed_revision_id TEXT NOT NULL REFERENCES observed_model_revisions(id),
+                    current_design_revision_id TEXT NOT NULL,
+                    workspace_json TEXT NOT NULL, status TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS design_revisions_v04 (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    parent_revision_id TEXT REFERENCES design_revisions_v04(id),
+                    revision_json TEXT NOT NULL, content_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(workspace_id, content_digest)
+                );
+                CREATE TABLE IF NOT EXISTS design_operations_v04 (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    base_design_revision_id TEXT NOT NULL REFERENCES design_revisions_v04(id),
+                    result_design_revision_id TEXT NOT NULL REFERENCES design_revisions_v04(id),
+                    operation_index INTEGER NOT NULL, operation_json TEXT NOT NULL,
+                    actor TEXT NOT NULL, rationale TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS design_reviews_v04 (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    design_revision_id TEXT NOT NULL REFERENCES design_revisions_v04(id),
+                    review_json TEXT NOT NULL, status TEXT NOT NULL, content_digest TEXT NOT NULL,
+                    submitted_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS design_approvals_v04 (
+                    id TEXT PRIMARY KEY, review_id TEXT NOT NULL UNIQUE REFERENCES design_reviews_v04(id),
+                    workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    approval_json TEXT NOT NULL, content_digest TEXT NOT NULL, approved_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS implementation_exports_v04 (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    design_revision_id TEXT NOT NULL REFERENCES design_revisions_v04(id),
+                    bundle_json TEXT NOT NULL, content_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(workspace_id, design_revision_id, content_digest)
+                );
+                CREATE TABLE IF NOT EXISTS verification_reports_v04 (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    implementation_bundle_id TEXT NOT NULL REFERENCES implementation_exports_v04(id),
+                    observed_revision_id TEXT NOT NULL REFERENCES observed_model_revisions(id),
+                    report_json TEXT NOT NULL, content_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(workspace_id, implementation_bundle_id, observed_revision_id)
+                );
+                CREATE TABLE IF NOT EXISTS verification_decisions_v04 (
+                    id TEXT PRIMARY KEY, report_id TEXT NOT NULL UNIQUE REFERENCES verification_reports_v04(id),
+                    workspace_id TEXT NOT NULL REFERENCES design_workspaces_v04(id),
+                    decision_json TEXT NOT NULL, content_digest TEXT NOT NULL, decided_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS alignment_findings (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                     snapshot_id TEXT NOT NULL REFERENCES snapshots(id), kind TEXT NOT NULL, severity TEXT NOT NULL,
@@ -135,6 +205,18 @@ class CoIntentRepository:
                     ON observed_model_revisions(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_observation_expansions_project
                     ON observation_expansion_requests(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_design_workspaces_v04_project
+                    ON design_workspaces_v04(project_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_design_revisions_v04_workspace
+                    ON design_revisions_v04(workspace_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_design_operations_v04_workspace
+                    ON design_operations_v04(workspace_id, created_at DESC, operation_index);
+                CREATE INDEX IF NOT EXISTS idx_design_reviews_v04_workspace
+                    ON design_reviews_v04(workspace_id, submitted_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_implementation_exports_v04_workspace
+                    ON implementation_exports_v04(workspace_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_verification_reports_v04_workspace
+                    ON verification_reports_v04(workspace_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_findings_project ON alignment_findings(project_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_mappings_project ON mapping_revisions(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_changes_project ON change_sets(project_id, status, updated_at DESC);
@@ -758,10 +840,16 @@ class CoIntentRepository:
     ) -> dict[str, Any]:
         self.get_project(project_id)
         if observed_revision_id is None:
-            revisions = self.list_observed_revisions(project_id, 1)
-            if not revisions:
+            with self.connection() as db:
+                row = db.execute(
+                    """SELECT revision_json FROM observed_model_revisions
+                       WHERE project_id=? AND parent_revision_id IS NULL
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (project_id,),
+                ).fetchone()
+            if row is None:
                 return {"project_id": project_id, "status": "not_generated", "observed_revision": None}
-            revision = revisions[0]
+            revision = json.loads(row["revision_json"])
         else:
             revision = self.get_observed_revision(observed_revision_id)
             if revision["project_id"] != project_id:
@@ -796,23 +884,89 @@ class CoIntentRepository:
         if revision.project_id != project_id:
             raise ValueError("observed revision does not belong to project")
         request = build_expansion_request(revision, node_id=node_id, depth=depth, created_at=_now())
+        stored: dict[str, Any] | None = None
         with self.connection() as db:
             existing = db.execute(
                 "SELECT request_json FROM observation_expansion_requests WHERE id=?", (request.id,),
             ).fetchone()
             if existing is not None:
-                return {"duplicate": True, "request": json.loads(existing["request_json"])}
+                stored = json.loads(existing["request_json"])
+            else:
+                db.execute(
+                    """INSERT INTO observation_expansion_requests(
+                       id,project_id,base_observed_revision_id,ua_snapshot_id,target_observed_node_id,
+                       depth,status,result_observed_revision_id,request_json,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (request.id, request.project_id, request.base_observed_revision_id,
+                     request.ua_snapshot_id, request.target_observed_node_id, request.depth,
+                     request.status, request.result_observed_revision_id, request.model_dump_json(),
+                     request.created_at, request.updated_at),
+                )
+        if stored is not None:
+            if stored["status"] == "queued":
+                stored = self.process_observation_expansion(request.id)
+            return {"duplicate": True, "request": stored}
+        return {"duplicate": False, "request": self.process_observation_expansion(request.id)}
+
+    def process_observation_expansion(self, request_id: str) -> dict[str, Any]:
+        """Run the trusted projector for one queued request and publish its immutable child revision."""
+        request = ObservationExpansionRequest.model_validate(self.get_observation_expansion(request_id))
+        if request.status != "queued":
+            return request.model_dump(mode="json")
+        base = ObservedModelRevision.model_validate(
+            self.get_observed_revision(request.base_observed_revision_id)
+        )
+        ua_snapshot = UnderstandAnythingSnapshot.model_validate(
+            self.get_understand_anything_snapshot(request.ua_snapshot_id)
+        )
+        code_snapshot = RepositorySnapshot.model_validate(
+            self.get_snapshot(base.code_snapshot_id)["snapshot"]
+        )
+        created = _now()
+        result = project_observed_expansion(
+            base,
+            ua_snapshot,
+            code_snapshot,
+            node_id=request.target_observed_node_id,
+            depth=request.depth,
+            created_at=created,
+        )
+        completed = request.model_copy(update={
+            "status": "atomic_at_current_evidence" if result is None else "completed",
+            "result_observed_revision_id": None if result is None else result.id,
+            "message": (
+                "No deeper located UA structure is available for this node."
+                if result is None
+                else f"Published {result.refinement.added_responsibilities} evidence-backed structural nodes."
+            ),
+            "updated_at": created,
+        })
+        created_result = False
+        with self.connection() as db:
+            if result is not None:
+                existing = db.execute(
+                    "SELECT id FROM observed_model_revisions WHERE id=?", (result.id,),
+                ).fetchone()
+                if existing is None:
+                    db.execute(
+                        """INSERT INTO observed_model_revisions(
+                           id,project_id,code_snapshot_id,ua_snapshot_id,parent_revision_id,
+                           refinement_of_node_id,revision_json,content_digest,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                        (result.id, result.project_id, result.code_snapshot_id, result.ua_snapshot_id,
+                         result.parent_revision_id, result.refinement_of_node_id,
+                         result.model_dump_json(), result.content_digest, result.created_at),
+                    )
+                    created_result = True
             db.execute(
-                """INSERT INTO observation_expansion_requests(
-                   id,project_id,base_observed_revision_id,ua_snapshot_id,target_observed_node_id,
-                   depth,status,result_observed_revision_id,request_json,created_at,updated_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (request.id, request.project_id, request.base_observed_revision_id,
-                 request.ua_snapshot_id, request.target_observed_node_id, request.depth,
-                 request.status, request.result_observed_revision_id, request.model_dump_json(),
-                 request.created_at, request.updated_at),
+                """UPDATE observation_expansion_requests
+                   SET status=?,result_observed_revision_id=?,request_json=?,updated_at=? WHERE id=?""",
+                (completed.status, completed.result_observed_revision_id,
+                 completed.model_dump_json(), completed.updated_at, completed.id),
             )
-        return {"duplicate": False, "request": request.model_dump(mode="json")}
+        if result is not None and created_result:
+            self._write_observed_revision_asset(result)
+        return completed.model_dump(mode="json")
 
     def get_observation_expansion(self, request_id: str) -> dict[str, Any]:
         with self.connection() as db:
@@ -832,6 +986,531 @@ class CoIntentRepository:
                 (project_id, max(1, min(limit, 100))),
             ).fetchall()
         return [json.loads(row["request_json"]) for row in rows]
+
+    # Independent 0.4 target-design workspaces and immutable operations
+
+    def create_design_workspace(
+        self,
+        project_id: str,
+        base_observed_revision_id: str,
+        title: str,
+        *,
+        actor: str = "human",
+        rationale: str = "Create a target design from the current observed baseline.",
+    ) -> dict[str, Any]:
+        self.get_project(project_id)
+        if actor not in {"human", "agent"}:
+            raise ValueError("design actor must be human or agent")
+        if not title.strip():
+            raise ValueError("design workspace title is required")
+        if not rationale.strip():
+            raise ValueError("design workspace rationale is required")
+        observed = ObservedModelRevision.model_validate(
+            self.get_observed_revision(base_observed_revision_id)
+        )
+        if observed.project_id != project_id:
+            raise ValueError("observed baseline does not belong to project")
+        workspace_id = _id("design-workspace")
+        created = _now()
+        revision = seed_design_from_observation(
+            observed,
+            workspace_id=workspace_id,
+            title=title.strip(),
+            actor=actor,
+            rationale=rationale.strip(),
+            created_at=created,
+        )
+        workspace = DesignWorkspace(
+            id=workspace_id,
+            project_id=project_id,
+            title=title.strip(),
+            base_observed_revision_id=observed.id,
+            base_code_snapshot_id=observed.code_snapshot_id,
+            current_design_revision_id=revision.id,
+            created_by=actor,
+            created_at=created,
+            updated_at=created,
+        )
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO design_workspaces_v04(
+                   id,project_id,base_observed_revision_id,current_design_revision_id,
+                   workspace_json,status,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (workspace.id, workspace.project_id, workspace.base_observed_revision_id,
+                 workspace.current_design_revision_id, workspace.model_dump_json(), workspace.status,
+                 workspace.created_at, workspace.updated_at),
+            )
+            db.execute(
+                """INSERT INTO design_revisions_v04(
+                   id,workspace_id,parent_revision_id,revision_json,content_digest,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (revision.id, workspace.id, revision.parent_revision_id, revision.model_dump_json(),
+                 revision.content_digest, revision.created_at),
+            )
+        self._write_target_workspace_asset(workspace)
+        self._write_target_revision_asset(project_id, revision)
+        return {"workspace": workspace.model_dump(mode="json"), "revision": revision.model_dump(mode="json")}
+
+    def get_design_workspace(self, workspace_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT workspace_json FROM design_workspaces_v04 WHERE id=?", (workspace_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown design workspace {workspace_id!r}")
+        return json.loads(row["workspace_json"])
+
+    def list_design_workspaces_v04(self, project_id: str) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT workspace_json FROM design_workspaces_v04
+                   WHERE project_id=? ORDER BY updated_at DESC""",
+                (project_id,),
+            ).fetchall()
+        return [json.loads(row["workspace_json"]) for row in rows]
+
+    def get_design_revision_v04(self, revision_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT revision_json FROM design_revisions_v04 WHERE id=?", (revision_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown design revision {revision_id!r}")
+        return json.loads(row["revision_json"])
+
+    def get_design_workspace_view(
+        self, project_id: str, workspace_id: str | None = None, revision_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        workspaces = self.list_design_workspaces_v04(project_id)
+        if not workspaces:
+            return None
+        workspace = self.get_design_workspace(workspace_id) if workspace_id else workspaces[0]
+        if workspace["project_id"] != project_id:
+            raise ValueError("design workspace does not belong to project")
+        selected_id = revision_id or workspace["current_design_revision_id"]
+        revision = self.get_design_revision_v04(selected_id)
+        if revision["workspace_id"] != workspace["id"]:
+            raise ValueError("design revision does not belong to workspace")
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT revision_json FROM design_revisions_v04
+                   WHERE workspace_id=? ORDER BY created_at DESC""",
+                (workspace["id"],),
+            ).fetchall()
+        verification_report = self.latest_verification_report_v04(workspace["id"])
+        return {
+            "workspace": workspace,
+            "revision": revision,
+            "revisions": [json.loads(row["revision_json"]) for row in rows],
+            "review": self.latest_design_review_v04(workspace["id"]),
+            "implementation_export": self.latest_implementation_export_v04(workspace["id"]),
+            "verification_report": verification_report,
+            "verification_decision": self.latest_verification_decision_v04(
+                workspace["id"],
+                verification_report["id"] if verification_report is not None else None,
+            ),
+        }
+
+    def apply_design_operations_v04(
+        self,
+        workspace_id: str,
+        base_design_revision_id: str,
+        operations: list[dict[str, Any]],
+        *,
+        actor: str,
+        rationale: str,
+    ) -> dict[str, Any]:
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(workspace_id))
+        if workspace.status != "draft":
+            raise ValueError("only draft design workspaces can be changed")
+        if workspace.current_design_revision_id != base_design_revision_id:
+            raise ValueError("design revision is stale; reload the workspace before applying operations")
+        if actor not in {"human", "agent"}:
+            raise ValueError("design actor must be human or agent")
+        parsed = [DesignOperation.model_validate(item) for item in operations]
+        base = DesignRevision.model_validate(self.get_design_revision_v04(base_design_revision_id))
+        created = _now()
+        revision = apply_design_operations(
+            base, parsed, actor=actor, rationale=rationale, created_at=created,
+        )
+        updated_workspace = workspace.model_copy(update={
+            "current_design_revision_id": revision.id,
+            "updated_at": created,
+        })
+        records = [DesignOperationRecord(
+            id=_id("design-operation"),
+            workspace_id=workspace.id,
+            base_design_revision_id=base.id,
+            result_design_revision_id=revision.id,
+            operation_index=index,
+            operation=operation,
+            actor=actor,
+            rationale=rationale.strip(),
+            created_at=created,
+        ) for index, operation in enumerate(parsed)]
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO design_revisions_v04(
+                   id,workspace_id,parent_revision_id,revision_json,content_digest,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (revision.id, revision.workspace_id, revision.parent_revision_id,
+                 revision.model_dump_json(), revision.content_digest, revision.created_at),
+            )
+            for record in records:
+                db.execute(
+                    """INSERT INTO design_operations_v04(
+                       id,workspace_id,base_design_revision_id,result_design_revision_id,
+                       operation_index,operation_json,actor,rationale,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (record.id, record.workspace_id, record.base_design_revision_id,
+                     record.result_design_revision_id, record.operation_index,
+                     record.operation.model_dump_json(), record.actor, record.rationale,
+                     record.created_at),
+                )
+            db.execute(
+                """UPDATE design_workspaces_v04
+                   SET current_design_revision_id=?,workspace_json=?,updated_at=? WHERE id=?""",
+                (updated_workspace.current_design_revision_id, updated_workspace.model_dump_json(),
+                 updated_workspace.updated_at, updated_workspace.id),
+            )
+        self._write_target_workspace_asset(updated_workspace)
+        self._write_target_revision_asset(workspace.project_id, revision)
+        for record in records:
+            self._write_design_operation_asset(workspace.project_id, record)
+        return {
+            "workspace": updated_workspace.model_dump(mode="json"),
+            "revision": revision.model_dump(mode="json"),
+            "operations": [item.model_dump(mode="json") for item in records],
+        }
+
+    def list_design_operations_v04(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        self.get_design_workspace(workspace_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT * FROM design_operations_v04 WHERE workspace_id=?
+                   ORDER BY created_at DESC,operation_index ASC LIMIT ?""",
+                (workspace_id, max(1, min(limit, 500))),
+            ).fetchall()
+        return [{
+            "id": row["id"],
+            "workspace_id": row["workspace_id"],
+            "base_design_revision_id": row["base_design_revision_id"],
+            "result_design_revision_id": row["result_design_revision_id"],
+            "operation_index": row["operation_index"],
+            "operation": json.loads(row["operation_json"]),
+            "actor": row["actor"],
+            "rationale": row["rationale"],
+            "created_at": row["created_at"],
+        } for row in rows]
+
+    def submit_design_review_v04(
+        self, workspace_id: str, acceptance_criteria: list[str], *, actor: str,
+    ) -> dict[str, Any]:
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(workspace_id))
+        if workspace.status != "draft":
+            raise ValueError("only a draft workspace can be submitted for review")
+        design = DesignRevision.model_validate(
+            self.get_design_revision_v04(workspace.current_design_revision_id)
+        )
+        observed = ObservedModelRevision.model_validate(
+            self.get_observed_revision(workspace.base_observed_revision_id)
+        )
+        submitted = _now()
+        review = build_design_review(
+            project_id=workspace.project_id,
+            workspace_id=workspace.id,
+            design=design,
+            observed=observed,
+            acceptance_statements=acceptance_criteria,
+            submitted_by=actor,
+            submitted_at=submitted,
+        )
+        updated_workspace = workspace.model_copy(update={"status": "in_review", "updated_at": submitted})
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO design_reviews_v04(
+                   id,workspace_id,design_revision_id,review_json,status,content_digest,submitted_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (review.id, review.workspace_id, review.design_revision_id, review.model_dump_json(),
+                 review.status, review.content_digest, review.submitted_at),
+            )
+            db.execute(
+                """UPDATE design_workspaces_v04 SET status=?,workspace_json=?,updated_at=? WHERE id=?""",
+                (updated_workspace.status, updated_workspace.model_dump_json(),
+                 updated_workspace.updated_at, updated_workspace.id),
+            )
+        self._write_target_workspace_asset(updated_workspace)
+        self._write_design_review_asset(workspace.project_id, review)
+        return review.model_dump(mode="json")
+
+    def get_design_review_v04(self, review_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT review_json FROM design_reviews_v04 WHERE id=?", (review_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown design review {review_id!r}")
+        return json.loads(row["review_json"])
+
+    def latest_design_review_v04(self, workspace_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                """SELECT review_json FROM design_reviews_v04
+                   WHERE workspace_id=? ORDER BY submitted_at DESC LIMIT 1""",
+                (workspace_id,),
+            ).fetchone()
+        return None if row is None else json.loads(row["review_json"])
+
+    def approve_design_review_v04(self, review_id: str, *, actor: str) -> dict[str, Any]:
+        if not actor.strip() or actor in {"agent", "local-agent", "cointent-agent"}:
+            raise ValueError("approval requires an authenticated human actor")
+        review = DesignReview.model_validate(self.get_design_review_v04(review_id))
+        if review.status != "in_review":
+            raise ValueError("design review is not awaiting approval")
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(review.workspace_id))
+        if workspace.status != "in_review" or workspace.current_design_revision_id != review.design_revision_id:
+            raise ValueError("workspace no longer matches the submitted design review")
+        approved_at = _now()
+        approval = build_approval(review, actor=actor, approved_at=approved_at)
+        approved_review = review.model_copy(update={"status": "approved"})
+        updated_workspace = workspace.model_copy(update={"status": "approved", "updated_at": approved_at})
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO design_approvals_v04(
+                   id,review_id,workspace_id,approval_json,content_digest,approved_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (approval.id, approval.review_id, approval.workspace_id, approval.model_dump_json(),
+                 approval.content_digest, approval.approved_at),
+            )
+            db.execute(
+                "UPDATE design_reviews_v04 SET review_json=?,status=? WHERE id=?",
+                (approved_review.model_dump_json(), approved_review.status, approved_review.id),
+            )
+            db.execute(
+                """UPDATE design_workspaces_v04 SET status=?,workspace_json=?,updated_at=? WHERE id=?""",
+                (updated_workspace.status, updated_workspace.model_dump_json(),
+                 updated_workspace.updated_at, updated_workspace.id),
+            )
+        self._write_target_workspace_asset(updated_workspace)
+        self._write_design_review_asset(workspace.project_id, approved_review)
+        self._write_design_approval_asset(workspace.project_id, approval)
+        return approval.model_dump(mode="json")
+
+    def create_implementation_export_v04(self, workspace_id: str) -> dict[str, Any]:
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(workspace_id))
+        if workspace.status not in {"approved", "exported"}:
+            raise ValueError("only a human-approved target design can be exported")
+        coordinate = self.observation_coordinate(workspace.project_id)
+        current_code_id = (coordinate.get("code_snapshot") or {}).get("id")
+        if current_code_id != workspace.base_code_snapshot_id:
+            raise ValueError("the design baseline is stale; review it against the latest code before export")
+        review_data = self.latest_design_review_v04(workspace.id)
+        if review_data is None:
+            raise ValueError("design workspace has no review")
+        review = DesignReview.model_validate(review_data)
+        if review.status != "approved" or review.design_revision_id != workspace.current_design_revision_id:
+            raise ValueError("the current design revision is not approved")
+        with self.connection() as db:
+            approval_row = db.execute(
+                "SELECT approval_json FROM design_approvals_v04 WHERE review_id=?", (review.id,),
+            ).fetchone()
+        if approval_row is None:
+            raise ValueError("design review has no human approval record")
+        approval = DesignApproval.model_validate_json(approval_row["approval_json"])
+        observed = ObservedModelRevision.model_validate(
+            self.get_observed_revision(review.base_observed_revision_id)
+        )
+        affected = {item.baseline_observed_id for item in review.changes if item.baseline_observed_id}
+        evidence = [
+            item.model_dump(mode="json") for item in observed.bindings
+            if item.subject_id in affected
+        ]
+        if not evidence:
+            evidence = [
+                item.model_dump(mode="json") for item in observed.bindings
+                if item.subject_kind == "capability"
+            ][:20]
+        operations = self.list_design_operations_v04(workspace.id, 500)
+        bundle = build_implementation_bundle(
+            review=review,
+            approval=approval,
+            base_code_snapshot_id=workspace.base_code_snapshot_id,
+            evidence_context=evidence,
+            operation_ids=[item["id"] for item in reversed(operations)],
+            created_at=_now(),
+        )
+        with self.connection() as db:
+            existing = db.execute(
+                "SELECT bundle_json FROM implementation_exports_v04 WHERE id=?", (bundle.id,),
+            ).fetchone()
+            if existing is None:
+                db.execute(
+                    """INSERT INTO implementation_exports_v04(
+                       id,workspace_id,design_revision_id,bundle_json,content_digest,created_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (bundle.id, bundle.workspace_id, bundle.design_revision_id,
+                     bundle.model_dump_json(), bundle.content_digest, bundle.created_at),
+                )
+                updated_workspace = workspace.model_copy(update={
+                    "status": "exported", "updated_at": bundle.created_at,
+                })
+                db.execute(
+                    """UPDATE design_workspaces_v04 SET status=?,workspace_json=?,updated_at=? WHERE id=?""",
+                    (updated_workspace.status, updated_workspace.model_dump_json(),
+                     updated_workspace.updated_at, updated_workspace.id),
+                )
+            else:
+                bundle = ImplementationChangeBundle.model_validate_json(existing["bundle_json"])
+                updated_workspace = workspace
+        if existing is None:
+            self._write_target_workspace_asset(updated_workspace)
+            self._write_implementation_bundle_asset(workspace.project_id, bundle)
+        return bundle.model_dump(mode="json")
+
+    def latest_implementation_export_v04(self, workspace_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                """SELECT bundle_json FROM implementation_exports_v04
+                   WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id,),
+            ).fetchone()
+        return None if row is None else json.loads(row["bundle_json"])
+
+    def create_verification_report_v04(
+        self, workspace_id: str, observed_revision_id: str,
+    ) -> dict[str, Any]:
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(workspace_id))
+        if workspace.status not in {"exported", "implementing", "verifying", "needs_revision"}:
+            raise ValueError("verification requires an exported implementation bundle")
+        bundle_data = self.latest_implementation_export_v04(workspace.id)
+        if bundle_data is None:
+            raise ValueError("verification requires an implementation bundle")
+        bundle = ImplementationChangeBundle.model_validate(bundle_data)
+        design = DesignRevision.model_validate(
+            self.get_design_revision_v04(bundle.design_revision_id)
+        )
+        baseline = ObservedModelRevision.model_validate(
+            self.get_observed_revision(bundle.base_observed_revision_id)
+        )
+        observed = ObservedModelRevision.model_validate(
+            self.get_observed_revision(observed_revision_id)
+        )
+        if observed.project_id != workspace.project_id:
+            raise ValueError("verification observation does not belong to the workspace project")
+        if observed.parent_revision_id is not None:
+            raise ValueError("verification requires a full root observation, not a focused refinement")
+        created = _now()
+        report = build_verification_report(
+            bundle=bundle,
+            design=design,
+            baseline=baseline,
+            observed=observed,
+            created_at=created,
+        )
+        updated_workspace = workspace.model_copy(update={"status": "verifying", "updated_at": created})
+        with self.connection() as db:
+            existing = db.execute(
+                "SELECT report_json FROM verification_reports_v04 WHERE id=?", (report.id,),
+            ).fetchone()
+            if existing is None:
+                db.execute(
+                    """INSERT INTO verification_reports_v04(
+                       id,workspace_id,implementation_bundle_id,observed_revision_id,
+                       report_json,content_digest,created_at
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (report.id, report.workspace_id, report.implementation_bundle_id,
+                     report.observed_revision_id, report.model_dump_json(),
+                     report.content_digest, report.created_at),
+                )
+                db.execute(
+                    """UPDATE design_workspaces_v04 SET status=?,workspace_json=?,updated_at=? WHERE id=?""",
+                    (updated_workspace.status, updated_workspace.model_dump_json(),
+                     updated_workspace.updated_at, updated_workspace.id),
+                )
+            else:
+                if workspace.status == "needs_revision":
+                    raise ValueError("this observed revision has already been reviewed; import a later observation")
+                report = VerificationReport.model_validate_json(existing["report_json"])
+        if existing is None:
+            self._write_target_workspace_asset(updated_workspace)
+            self._write_verification_report_asset(workspace.project_id, report)
+        return report.model_dump(mode="json")
+
+    def get_verification_report_v04(self, report_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT report_json FROM verification_reports_v04 WHERE id=?", (report_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown verification report {report_id!r}")
+        return json.loads(row["report_json"])
+
+    def latest_verification_report_v04(self, workspace_id: str) -> dict[str, Any] | None:
+        with self.connection() as db:
+            row = db.execute(
+                """SELECT report_json FROM verification_reports_v04
+                   WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id,),
+            ).fetchone()
+        return None if row is None else json.loads(row["report_json"])
+
+    def decide_verification_v04(
+        self, report_id: str, *, decision: str, notes: str, actor: str,
+    ) -> dict[str, Any]:
+        if decision not in {"converged", "needs_revision"}:
+            raise ValueError("verification decision must be converged or needs_revision")
+        report = VerificationReport.model_validate(self.get_verification_report_v04(report_id))
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(report.workspace_id))
+        if workspace.status != "verifying":
+            raise ValueError("workspace is not awaiting verification review")
+        decided = _now()
+        record = build_verification_decision(
+            report,
+            decision=decision,
+            notes=notes,
+            actor=actor,
+            decided_at=decided,
+        )
+        updated_workspace = workspace.model_copy(update={
+            "status": decision,
+            "updated_at": decided,
+        })
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO verification_decisions_v04(
+                   id,report_id,workspace_id,decision_json,content_digest,decided_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (record.id, record.report_id, record.workspace_id, record.model_dump_json(),
+                 record.content_digest, record.decided_at),
+            )
+            db.execute(
+                """UPDATE design_workspaces_v04 SET status=?,workspace_json=?,updated_at=? WHERE id=?""",
+                (updated_workspace.status, updated_workspace.model_dump_json(),
+                 updated_workspace.updated_at, updated_workspace.id),
+            )
+        self._write_target_workspace_asset(updated_workspace)
+        self._write_verification_decision_asset(workspace.project_id, record)
+        return record.model_dump(mode="json")
+
+    def latest_verification_decision_v04(
+        self, workspace_id: str, report_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self.connection() as db:
+            if report_id is None:
+                row = db.execute(
+                    """SELECT decision_json FROM verification_decisions_v04
+                       WHERE workspace_id=? ORDER BY decided_at DESC LIMIT 1""",
+                    (workspace_id,),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    """SELECT decision_json FROM verification_decisions_v04
+                       WHERE workspace_id=? AND report_id=? ORDER BY decided_at DESC LIMIT 1""",
+                    (workspace_id, report_id),
+                ).fetchone()
+        return None if row is None else json.loads(row["decision_json"])
 
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with self.connection() as db:
@@ -1124,6 +1803,65 @@ class CoIntentRepository:
         _atomic_json(
             self._project_dir(revision.project_id) / "observed" / f"{revision.id}.json",
             revision.model_dump(mode="json"),
+        )
+
+    def _write_target_workspace_asset(self, workspace: DesignWorkspace) -> None:
+        _atomic_json(
+            self._project_dir(workspace.project_id) / "target-design" / workspace.id / "workspace.json",
+            workspace.model_dump(mode="json"),
+        )
+
+    def _write_target_revision_asset(self, project_id: str, revision: DesignRevision) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / revision.workspace_id
+            / "revisions" / f"{revision.id}.json",
+            revision.model_dump(mode="json"),
+        )
+
+    def _write_design_operation_asset(self, project_id: str, record: DesignOperationRecord) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / record.workspace_id
+            / "operations" / f"{record.id}.json",
+            record.model_dump(mode="json"),
+        )
+
+    def _write_design_review_asset(self, project_id: str, review: DesignReview) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / review.workspace_id
+            / "reviews" / f"{review.id}.json",
+            review.model_dump(mode="json"),
+        )
+
+    def _write_design_approval_asset(self, project_id: str, approval: DesignApproval) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / approval.workspace_id
+            / "approvals" / f"{approval.id}.json",
+            approval.model_dump(mode="json"),
+        )
+
+    def _write_implementation_bundle_asset(
+        self, project_id: str, bundle: ImplementationChangeBundle,
+    ) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / bundle.workspace_id
+            / "exports" / f"{bundle.id}.json",
+            bundle.model_dump(mode="json"),
+        )
+
+    def _write_verification_report_asset(self, project_id: str, report: VerificationReport) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / report.workspace_id
+            / "verifications" / f"{report.id}.json",
+            report.model_dump(mode="json"),
+        )
+
+    def _write_verification_decision_asset(
+        self, project_id: str, decision: VerificationDecision,
+    ) -> None:
+        _atomic_json(
+            self._project_dir(project_id) / "target-design" / decision.workspace_id
+            / "verification-decisions" / f"{decision.id}.json",
+            decision.model_dump(mode="json"),
         )
 
 

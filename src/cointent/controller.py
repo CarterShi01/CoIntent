@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from contexture import Channels, Contexture, Role, Skill, Tool, current_principal
 
+from .design import DesignOperation
 from .models import ImplementationLink, ModelPatch
 from .repository import CoIntentRepository
 from .scanner import RepositorySnapshot
@@ -150,7 +151,7 @@ class RequestObservationExpansion(Tool):
     def __init__(self) -> None:
         super().__init__(
             name="request-observation-expansion",
-            description="Queue a bounded Understand Anything refinement for one observed node; accepts no graph content.",
+            description="Generate a bounded Understand Anything refinement for one observed node; accepts no graph content.",
             read_only=False,
         )
 
@@ -172,6 +173,117 @@ class ListObservationExpansions(Tool):
 
     async def invoke(self, project_id: str = "idea-factory", limit: int = 20) -> dict[str, Any]:
         return {"expansion_requests": _repository(self).list_observation_expansions(project_id, limit)}
+
+
+class ListTargetDesignWorkspaces(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="list-target-design-workspaces",
+            description="List independent 0.4 target-design workspaces and their observed baselines.",
+            read_only=True,
+        )
+
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
+        return {"workspaces": _repository(self).list_design_workspaces_v04(project_id)}
+
+
+class InspectTargetDesignWorkspace(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="inspect-target-design-workspace",
+            description="Read a target workspace, selected immutable revision, and revision history.",
+            read_only=True,
+        )
+
+    async def invoke(
+        self,
+        project_id: str = "idea-factory",
+        workspace_id: str | None = None,
+        revision_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        return _repository(self).get_design_workspace_view(project_id, workspace_id, revision_id)
+
+
+class CreateTargetDesignWorkspace(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="create-target-design-workspace",
+            description="Clone one observed baseline into an independent des-* target-design namespace.",
+            read_only=False,
+        )
+
+    async def invoke(
+        self,
+        project_id: str,
+        base_observed_revision_id: str,
+        title: str,
+        rationale: str,
+        actor: Literal["human", "agent"] = "human",
+    ) -> dict[str, Any]:
+        return _repository(self).create_design_workspace(
+            project_id, base_observed_revision_id, title, actor=actor, rationale=rationale,
+        )
+
+
+class ApplyTargetDesignOperations(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="apply-target-design-operations",
+            description="Apply typed intent/feature/Responsibility/Workflow operations as one immutable revision.",
+            read_only=False,
+        )
+
+    async def invoke(
+        self,
+        workspace_id: str,
+        base_design_revision_id: str,
+        operations: list[DesignOperation],
+        rationale: str,
+        actor: Literal["human", "agent"] = "agent",
+    ) -> dict[str, Any]:
+        return _repository(self).apply_design_operations_v04(
+            workspace_id,
+            base_design_revision_id,
+            [item.model_dump(mode="json") for item in operations],
+            actor=actor,
+            rationale=rationale,
+        )
+
+
+class ListTargetDesignOperations(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="list-target-design-operations",
+            description="Read the authorship and rationale audit trail for a target-design workspace.",
+            read_only=True,
+        )
+
+    async def invoke(self, workspace_id: str, limit: int = 100) -> dict[str, Any]:
+        return {"operations": _repository(self).list_design_operations_v04(workspace_id, limit)}
+
+
+class CompareImplementationToTarget(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="compare-implementation-to-target",
+            description="Create an evidence-backed verification report from an exported target and later observation.",
+            read_only=False,
+        )
+
+    async def invoke(self, workspace_id: str, observed_revision_id: str) -> dict[str, Any]:
+        return _repository(self).create_verification_report_v04(workspace_id, observed_revision_id)
+
+
+class InspectVerificationReport(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="inspect-verification-report",
+            description="Read verification claims; only a human can record the convergence decision.",
+            read_only=True,
+        )
+
+    async def invoke(self, report_id: str) -> dict[str, Any]:
+        return _repository(self).get_verification_report_v04(report_id)
 
 
 class InspectDesign(Tool):
@@ -574,6 +686,22 @@ class Specification(Role):
         )
 
 
+class TargetDesign(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="target-design",
+            description="Evolve desired functions and Responsibilities independently from observed code truth.",
+            instructions=(
+                "All mutable semantic identities must use the des-* namespace. Preserve the exact observed "
+                "baseline and explain every operation; never target an obs-* identity."
+            ),
+            tools=[ListTargetDesignWorkspaces(), InspectTargetDesignWorkspace(),
+                   CreateTargetDesignWorkspace(), ApplyTargetDesignOperations(),
+                   ListTargetDesignOperations(), CompareImplementationToTarget(),
+                   InspectVerificationReport()],
+        )
+
+
 class ResponsibilityModel(Role):
     def __init__(self) -> None:
         super().__init__(
@@ -627,7 +755,7 @@ class CoIntent(Role):
                 "Follow the three-level chain: specification → Responsibility Workflow → backend evidence. "
                 "Never substitute an architecture or code graph for the Responsibility model."
             ),
-            children=[ProjectManagement(), CurrentUnderstanding(), Specification(), ResponsibilityModel(), ImplementationAlignment(),
+            children=[ProjectManagement(), CurrentUnderstanding(), TargetDesign(), Specification(), ResponsibilityModel(), ImplementationAlignment(),
                       ChangeLifecycle(), HistoryAndPortability()],
         )
 

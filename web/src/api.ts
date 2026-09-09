@@ -1,6 +1,8 @@
 import type {
   AlignmentBaseline, ChangeSet, DesignVersion, Finding, ModelResponse,
-  ObservationCoordinate, OverviewResponse, Project, Proposal,
+  ObservationCoordinate, ObservationExpansionRequest, OverviewResponse, Project, Proposal,
+  DesignReview, ImplementationChangeBundle, TargetDesignOperation, TargetDesignView,
+  VerificationDecision, VerificationReport,
 } from "./types";
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -39,8 +41,115 @@ export async function loadWorkspace(projectId: string, designVersion?: number) {
   };
 }
 
-export function fetchObservation(projectId: string): Promise<ObservationCoordinate> {
-  return call(`/api/v1/observation?${new URLSearchParams({ project_id: projectId })}`);
+export function fetchObservation(projectId: string, observedRevisionId?: string): Promise<ObservationCoordinate> {
+  const query = new URLSearchParams({ project_id: projectId });
+  if (observedRevisionId) query.set("observed_revision_id", observedRevisionId);
+  return call(`/api/v1/observation?${query}`);
+}
+
+export function requestObservationExpansion(
+  projectId: string, observedRevisionId: string, nodeId: string, depth = 1,
+): Promise<{ duplicate: boolean; request: ObservationExpansionRequest }> {
+  return call("/api/v1/observation-expansions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: projectId,
+      observed_revision_id: observedRevisionId,
+      node_id: nodeId,
+      depth,
+    }),
+  });
+}
+
+export function fetchTargetDesignWorkspace(
+  projectId: string, workspaceId?: string, revisionId?: string,
+): Promise<TargetDesignView | null> {
+  const query = new URLSearchParams({ project_id: projectId });
+  if (workspaceId) query.set("workspace_id", workspaceId);
+  if (revisionId) query.set("revision_id", revisionId);
+  return call(`/api/v1/target-design-workspace?${query}`);
+}
+
+export function createTargetDesignWorkspace(
+  projectId: string, baseObservedRevisionId: string, title: string, rationale: string,
+): Promise<{ workspace: TargetDesignView["workspace"]; revision: TargetDesignView["revision"] }> {
+  return call("/api/v1/target-design-workspaces", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: projectId,
+      base_observed_revision_id: baseObservedRevisionId,
+      title,
+      rationale,
+      actor: "human",
+    }),
+  });
+}
+
+export function applyTargetDesignOperations(
+  workspaceId: string,
+  baseDesignRevisionId: string,
+  operations: TargetDesignOperation[],
+  rationale: string,
+): Promise<unknown> {
+  return call("/api/v1/target-design-operations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workspace_id: workspaceId,
+      base_design_revision_id: baseDesignRevisionId,
+      operations,
+      rationale,
+      actor: "human",
+    }),
+  });
+}
+
+export function submitTargetDesignReview(
+  workspaceId: string, acceptanceCriteria: string[],
+): Promise<DesignReview> {
+  return call("/api/v1/target-design-reviews", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace_id: workspaceId, acceptance_criteria: acceptanceCriteria }),
+  });
+}
+
+export function approveTargetDesignReview(reviewId: string): Promise<{ id: string }> {
+  return call("/api/v1/target-design-approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ review_id: reviewId }),
+  });
+}
+
+export function exportImplementationBundle(workspaceId: string): Promise<ImplementationChangeBundle> {
+  return call("/api/v1/implementation-exports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace_id: workspaceId }),
+  });
+}
+
+export function createVerificationReport(
+  workspaceId: string, observedRevisionId: string,
+): Promise<VerificationReport> {
+  return call("/api/v1/verifications", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workspace_id: workspaceId, observed_revision_id: observedRevisionId }),
+  });
+}
+
+export function decideVerification(
+  reportId: string, decision: "converged" | "needs_revision", notes: string,
+): Promise<VerificationDecision> {
+  return call("/api/v1/verification-decisions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ report_id: reportId, decision, notes }),
+  });
 }
 
 export interface SessionState {

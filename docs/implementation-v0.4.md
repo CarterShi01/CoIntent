@@ -1,6 +1,6 @@
 # CoIntent 0.4 Execution Path
 
-**Status:** active  
+**Status:** vertical loop delivered
 **Decision baseline:** [design-v0.4](design-v0.4.md), [ADR-0001](adr-0001-codemap-engine.md)  
 **Delivery rule:** ship one Understand Anything path first; introduce no generic analyzer framework.
 
@@ -15,11 +15,28 @@ Implemented in the first working slice:
 - evidence-backed Domain/Flow/Step projection;
 - operator-only CLI import;
 - read-only observation MCP/HTTP queries;
-- bounded, idempotent Agent expansion requests with no graph payload;
+- bounded, idempotent Agent/browser expansion requests with no graph payload;
+- synchronous trusted expansion worker with immutable child revisions, parent lineage, coverage deltas,
+  64-node safety bounds, result caching, and explicit `atomic_at_current_evidence` outcomes;
+- independent 0.4 target-design workspace/revision/operation stores with `des-*` identity enforcement;
+- observed-baseline cloning, typed intent/feature/Responsibility/Workflow operations, optimistic concurrency,
+  immutable revision history, and authorship/rationale audit assets;
+- browser target creation, expected-function authoring, Responsibility editing/decomposition, history selection,
+  and exact-baseline navigation;
+- server-calculated target-minus-baseline semantic diffs with mandatory acceptance criteria;
+- human-only browser approval outside the MCP tool graph, locked reviewed revisions, and auditable approval assets;
+- deterministic `ImplementationChangeBundle` export with exact coordinates, semantic operations, bounded source
+  context, acceptance checks, and a coding-Agent prompt that grants no model-store authority;
+- post-implementation comparison against a later observed/code coordinate with explicit matched, missing,
+  unexpected, ambiguous, and stale claims;
+- human-only convergence/needs-revision decisions outside the MCP tool graph, with evidence reports and
+  decisions stored as immutable audit assets;
 - desktop and mobile Understand/Design mode boundary;
-- real-browser verification of current, design, and mobile flows.
+- real-browser verification of current, refinement, atomic, parent-return, design, review/export,
+  failed-convergence, and mobile flows.
 
-Still ordered after this checkpoint: UA expansion worker completion, independent 0.4 design stores, approval/export, and post-implementation verification.
+The 0.4 vertical loop is implemented. The remaining release work is running the pinned external UA engine
+against the production Idea Factory repository and reviewing its real-world coverage before enabling it by default.
 
 ## 1. Target vertical loop
 
@@ -86,6 +103,8 @@ Exit criteria:
 
 ### Increment C — recursive understanding
 
+**Checkpoint:** delivered in the current working slice.
+
 Deliverables:
 
 1. introduce bounded `ObservationExpansionRequest` with only project, revision, node, and depth parameters;
@@ -102,6 +121,8 @@ Exit criteria:
 - breadcrumb navigation can return to every parent semantic level.
 
 ### Increment D — independent target design
+
+**Checkpoint:** delivered in the current working slice.
 
 Deliverables:
 
@@ -121,6 +142,8 @@ Exit criteria:
 
 ### Increment E — review and implementation export
 
+**Checkpoint:** delivered in the current working slice.
+
 Deliverables:
 
 1. calculate semantic target-minus-baseline changes;
@@ -137,6 +160,8 @@ Exit criteria:
 - approval actor and timestamp are auditable.
 
 ### Increment F — close the loop
+
+**Checkpoint:** delivered in the current working slice.
 
 Deliverables:
 
@@ -232,6 +257,8 @@ Every observed node carries one or more `EvidenceBinding` records. A semantic St
 | Report understanding issue | yes | yes | yes |
 | Edit design draft | yes | propose | no |
 | Approve/export design | human only | no | no |
+| Compare later observation to approved target | yes | yes | yes |
+| Declare converged / needs revision | human only | no API | no |
 
 The import command accepts files from the trusted pipeline host. The HTTP and MCP surfaces accept identifiers and bounded requests, never native graph payloads.
 

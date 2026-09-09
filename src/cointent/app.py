@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from pathlib import Path
 
 from contexture import Principal
 from contexture.server import Auth, compile_application
@@ -15,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .controller import app as declaration
+from .repository import CoIntentRepository
 from .session import LoginThrottle, SESSION_COOKIE, SessionAuth
 
 
@@ -41,6 +43,15 @@ REST_ROUTES = (
     Route("GET", "/api/v1/observation", "cointent/current-understanding/inspect-observation-coordinate"),
     Route("GET", "/api/v1/observed-revisions", "cointent/current-understanding/list-observed-revisions"),
     Route("GET", "/api/v1/observed-revision", "cointent/current-understanding/inspect-observed-revision"),
+    Route("GET", "/api/v1/observation-expansions", "cointent/current-understanding/list-observation-expansions"),
+    Route("POST", "/api/v1/observation-expansions", "cointent/current-understanding/request-observation-expansion"),
+    Route("GET", "/api/v1/target-design-workspaces", "cointent/target-design/list-target-design-workspaces"),
+    Route("POST", "/api/v1/target-design-workspaces", "cointent/target-design/create-target-design-workspace"),
+    Route("GET", "/api/v1/target-design-workspace", "cointent/target-design/inspect-target-design-workspace"),
+    Route("POST", "/api/v1/target-design-operations", "cointent/target-design/apply-target-design-operations"),
+    Route("GET", "/api/v1/target-design-operations", "cointent/target-design/list-target-design-operations"),
+    Route("POST", "/api/v1/verifications", "cointent/target-design/compare-implementation-to-target"),
+    Route("GET", "/api/v1/verification", "cointent/target-design/inspect-verification-report"),
     Route("GET", "/api/v1/model", "cointent/responsibility-model/inspect-design"),
     Route("GET", "/api/v1/specification", "cointent/specification/inspect-specification-tree"),
     Route("GET", "/api/v1/intent-sources", "cointent/specification/list-intent-sources"),
@@ -116,11 +127,65 @@ def build_http_app() -> Starlette:
             )
             await response(scope, receive, send)
             return
+        if request.method == "POST" and path == "/api/v1/target-design-reviews":
+            response = await _browser_write(request, session_user, "review")
+            await response(scope, receive, send)
+            return
+        if request.method == "POST" and path == "/api/v1/target-design-approvals":
+            response = await _browser_write(request, session_user, "approve")
+            await response(scope, receive, send)
+            return
+        if request.method == "POST" and path == "/api/v1/implementation-exports":
+            response = await _browser_write(request, session_user, "export")
+            await response(scope, receive, send)
+            return
+        if request.method == "POST" and path == "/api/v1/verification-decisions":
+            response = await _browser_write(request, session_user, "verification-decision")
+            await response(scope, receive, send)
+            return
         await rest(scope, receive, send)
 
     parent = Starlette(lifespan=mcp.router.lifespan_context)
     parent.mount("/", dispatch)
     return parent
+
+
+async def _browser_write(request: Request, session_user: str | None, operation: str) -> JSONResponse:
+    """Keep human approval/export outside the Agent-visible Contexture tool graph."""
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        database = Path(os.environ.get("COINTENT_DB_PATH", "runtime/cointent.db"))
+        asset_root = Path(os.environ.get("COINTENT_DATA_ROOT", str(database.parent / "projects")))
+        repository = CoIntentRepository(database, asset_root)
+        actor = session_user or "local-human"
+        if operation == "review":
+            result = repository.submit_design_review_v04(
+                str(payload.get("workspace_id", "")),
+                [str(item) for item in payload.get("acceptance_criteria", [])],
+                actor=actor,
+            )
+        elif operation == "approve":
+            result = repository.approve_design_review_v04(
+                str(payload.get("review_id", "")), actor=actor,
+            )
+        elif operation == "export":
+            result = repository.create_implementation_export_v04(
+                str(payload.get("workspace_id", "")),
+            )
+        else:
+            result = repository.decide_verification_v04(
+                str(payload.get("report_id", "")),
+                decision=str(payload.get("decision", "")),
+                notes=str(payload.get("notes", "")),
+                actor=actor,
+            )
+        return JSONResponse(result)
+    except KeyError as error:
+        return JSONResponse({"error": "not_found", "detail": str(error)}, status_code=404)
+    except ValueError as error:
+        return JSONResponse({"error": "invalid_request", "detail": str(error)}, status_code=400)
 
 
 async def _login(request: Request, auth: SessionAuth, throttle: LoginThrottle) -> JSONResponse:
