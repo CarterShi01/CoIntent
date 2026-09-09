@@ -173,6 +173,25 @@ export interface ClaimBinding {
   explanation: string;
 }
 
+export interface ImplementationRef {
+  id: string;
+  project_id: string;
+  observed_revision_id: string;
+  subject_kind: "system_function" | "responsibility";
+  subject_id: string;
+  ua_snapshot_id: string;
+  code_snapshot_id: string;
+  graph_kind: "structural";
+  semantic_ua_node_id: string | null;
+  structural_ua_node_ids: string[];
+  preferred_focus_node_id: string | null;
+  file_path: string;
+  line_range: [number, number] | null;
+  symbol: string | null;
+  role: "primary" | "supporting";
+  resolution: "exact_symbol" | "exact_span" | "enclosing_symbol" | "file_fallback" | "inherited";
+}
+
 export interface ObservedCapability {
   id: string;
   name: string;
@@ -193,6 +212,7 @@ export interface ObservedRevision {
   capabilities: ObservedCapability[];
   responsibilities: Responsibility[];
   bindings: ClaimBinding[];
+  implementation_refs: ImplementationRef[];
   diagnostics: Array<{ kind: string; subject_id: string | null; message: string }>;
   refinement: null | {
     requested_depth: number;
@@ -281,7 +301,8 @@ export interface TargetDesignRevision {
   }>;
   rationale: string;
   unresolved_questions: string[];
-  created_by: "human" | "agent";
+  acceptance_criteria: string[];
+  created_by: string;
   created_at: string;
   content_digest: string;
 }
@@ -294,7 +315,7 @@ export interface TargetDesignWorkspace {
   base_code_snapshot_id: string;
   status: string;
   current_design_revision_id: string;
-  created_by: "human" | "agent";
+  created_by: string;
   created_at: string;
   updated_at: string;
 }
@@ -317,6 +338,20 @@ export interface SemanticDesignChange {
   baseline_observed_id: string | null;
   name: string;
   fields: string[];
+}
+
+export interface StructureDesignDiff {
+  workspace_id: string;
+  from: { kind: "observed_baseline" | "design_revision"; id: string };
+  to_design_revision_id: string;
+  changes: SemanticDesignChange[];
+  diff_digest: string;
+}
+
+export interface ImplementationContextResult {
+  diff: StructureDesignDiff;
+  implementation_context: ImplementationChangeBundle;
+  initiated_by: string;
 }
 
 export interface DesignReview {
@@ -399,4 +434,51 @@ export type TargetDesignOperation =
   | { kind: "set_workflow"; responsibility_id: string; workflow: Workflow | null }
   | { kind: "upsert_feature_link"; feature_link: FeatureResponsibilityLink }
   | { kind: "remove_feature_link"; feature_link_id: string }
-  | { kind: "set_unresolved_questions"; unresolved_questions: string[] };
+  | { kind: "set_unresolved_questions"; unresolved_questions: string[] }
+  | { kind: "set_acceptance_criteria"; acceptance_criteria: string[] };
+
+export interface UnderstandingRefreshJob {
+  id: string;
+  project_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  mode: "unchanged" | "incremental" | "full" | null;
+  requested_by: string;
+  changed_files: string[];
+  ua_files_reanalyzed: string[];
+  fallback_reason: string | null;
+  diagnostics: string[];
+  repository_revision: string | null;
+  code_snapshot_id: string | null;
+  ua_snapshot_id: string | null;
+  observed_revision_id: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface ProjectState {
+  project: Project;
+  observation: ObservationCoordinate;
+  latest_refresh: UnderstandingRefreshJob | null;
+  active_target_drawings: TargetDesignWorkspace[];
+  allowed_next_actions: string[];
+}
+
+export interface UaViewerSession {
+  viewer_url: string;
+  project_id: string;
+  observed_revision_id: string;
+  ua_snapshot_id: string;
+  code_snapshot_id: string;
+  expires_at: string;
+}
+
+export interface UaSemanticSubject {
+  observed_revision_id: string;
+  subject_kind: "system_function" | "responsibility";
+  subject_id: string;
+  name: string;
+  implementation_ref_id: string;
+}

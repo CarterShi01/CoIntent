@@ -4,7 +4,7 @@
 
 CoIntent is an Agent-native, on-demand system with two explicit processes: understand the current program from code, and design the program humans want next. It is not an always-on task manager. A user invokes it when they want to learn the current system or explicitly design its structure before code. A product manager can begin with a plain-language capability and repeatedly drill into the structure that fulfills it. Concrete source locations remain linked as evidence without turning the primary view into a file or class diagram.
 
-The repository contains the working **0.3 design MVP** plus the **0.4 observed-truth, recursive-understanding, independent-target, diff, and comparison primitives**. The canonical product flow is now “understand on demand, design on demand”: refresh only when a user asks to understand or starts design; expose one web-equivalent semantic level to an Agent at a time; keep target drawings as history; and never trigger analysis merely because code development finished. Version 0.4 uses only Understand Anything and intentionally has no multi-engine adapter framework.
+The repository contains the working **0.3 design MVP** plus the implemented **0.4 on-demand understanding and structure-first design loop**. The canonical product flow is “understand on demand, design on demand”: refresh only when a user asks to understand or starts design; expose one web-equivalent semantic level to an Agent at a time; keep target drawings as history; and never trigger analysis merely because code development finished. Version 0.4 uses only Understand Anything and intentionally has no multi-engine adapter framework.
 
 ## The model
 
@@ -66,11 +66,15 @@ The scanner only records deterministic repository facts. An Agent interprets tho
 
 ## Quick start
 
-Requirements: Git, Python 3.11+, [uv](https://docs.astral.sh/uv/), and Node.js 20+.
+Requirements: Git, Python 3.11+, [uv](https://docs.astral.sh/uv/), and Node.js 22+ to build the pinned UA Dashboard.
 
 ```bash
 uv sync --extra dev
 npm --prefix web install
+
+# Build the official UA 2.9.6 Dashboard at its pinned Git commit, with the
+# small CoIntent same-origin data/focus bridge applied at exact source anchors.
+scripts/build-ua-viewer.sh
 
 # Legacy backend-only scan and optional 0.3 design seed.
 uv run cointent scan /path/to/idea-factory \
@@ -92,7 +96,19 @@ uv run cointent import-understand-anything \
   --domain-graph /path/to/idea-factory/.ua/domain-graph.json \
   --ua-tool-revision 5feed1f2ce4f9c368d860f4c0ebc36d98a4693fc
 
-# Contexture MCP plus protected/read REST surface.
+# Bind the trusted clean checkout used by on-demand refresh jobs.
+uv run cointent bind-checkout --project-id idea-factory /path/to/idea-factory
+
+# Configure a trusted non-interactive Agent runtime which has the pinned UA
+# skills installed. This is JSON argv, not a shell command.
+export COINTENT_UA_AGENT_COMMAND_JSON='["your-headless-agent","--print"]'
+
+# Run the persistent trusted worker as a separate service process.
+uv run cointent refresh-worker --forever
+
+# Contexture MCP plus authenticated browser HTTP surface.
+# Set COINTENT_UA_VIEWER_ROOT if the built viewer is deployed outside
+# web/ua-viewer-dist relative to the server working directory.
 uv run cointent serve
 
 # Development UI.
@@ -103,9 +119,11 @@ Open `http://127.0.0.1:5175`. The backend listens on `127.0.0.1:8811`. A local M
 
 Re-running `scan` creates an incremental snapshot and compares it with the previous one. The target repository is read-only. Untracked files are omitted unless `--include-untracked` is explicitly supplied. UA import requires a `--scope full` snapshot and validates commit, paths, graph references, line ranges, and structural corroboration before publishing an observed revision.
 
-The current CLI imports completed UA artifacts; the on-demand runner is the next operational slice. Its first
-run uses `/understand --full`; subsequent changed runs must use Understand Anything's default incremental mode,
-and unchanged code skips both UA and domain analysis. A complete imported graph does not imply full recomputation.
+The operator import remains available for recovery and migration. Normal product use queues the implemented
+on-demand runner. Its first run uses `/understand --full`; subsequent changed runs use Understand Anything's
+default incremental mode, and unchanged code skips both UA and domain analysis. Domain analysis is full when UA
+runs. Each job reports its selected mode, changed files, analyzer files, fallback reason, diagnostics, duration,
+and exact published coordinates.
 
 ## Agent MCP capabilities
 
@@ -119,7 +137,8 @@ The canonical public 0.4 surface is intentionally small:
 The exact operations and Role instructions are specified in the
 [on-demand product flow and MCP surface](docs/on-demand-product-flow.md).
 
-The current runtime also exposes migration-era 0.3 capabilities:
+Migration-era 0.3 capabilities remain available to the browser compatibility surface, but are not compiled into
+the public MCP server:
 
 The Contexture graph groups typed tools and four method Skills under:
 
@@ -188,4 +207,9 @@ CoIntent pins Contexture to the exact latest upstream `master` commit available 
 
 ## Scope
 
-Version 0.4 has delivered the trusted code → UA artifact → observed structure path, evidence-bounded recursive expansion, independent target-design workspaces, semantic implementation bundles, and later-observation comparison primitives. The next slice adds the compact Agent MCP contract, persistent incremental UA runner, and directly embedded UA Dashboard with bidirectional ImplementationRef focus. Production Idea Factory UA coverage review and rollout remain release work. Infrastructure topology remains out of scope.
+Version 0.4 now delivers the compact scoped Agent MCP contract, persistent incremental UA runner, trusted code →
+UA → observed structure path, first-class `ImplementationRef` mappings, evidence-bounded recursive expansion,
+independent target drawings, exact diff-bound implementation contexts, and the directly embedded official UA
+Dashboard with forward/reverse semantic focus. Production installation of a headless Agent command with pinned UA
+skills, an Idea Factory coverage review, and rollout remain deployment work. Infrastructure topology remains out
+of scope.

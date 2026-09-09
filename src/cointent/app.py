@@ -13,9 +13,9 @@ from contexture.web import RestSurface, Route
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 
-from .controller import app as declaration
+from .controller import app as declaration, legacy_app
 from .repository import CoIntentRepository
 from .session import LoginThrottle, SESSION_COOKIE, SessionAuth
 
@@ -29,7 +29,10 @@ class StaticTokenVerifier:
             return None
         return Principal(
             subject="cointent-agent", client_id="mcp", issuer="cointent-static",
-            scopes=frozenset({"cointent"}), claims={"auth": "static-token"},
+            scopes=frozenset({
+                "cointent.read", "cointent.refresh.request",
+                "cointent.design.write", "cointent.design.finalize",
+            }), claims={"auth": "static-token"},
         )
 
 
@@ -66,14 +69,14 @@ REST_ROUTES = (
 def build_http_app() -> Starlette:
     """Build a parent ASGI app with MCP routes followed by the REST fallback."""
     compiled = compile_application(declaration)
-    runtime = compiled.runtime()
+    runtime = compile_application(legacy_app).runtime()
     rest = RestSurface(runtime, routes=REST_ROUTES)
     browser_auth = SessionAuth.from_env()
     login_throttle = LoginThrottle()
     token = os.environ.get("COINTENT_MCP_TOKEN", "")
     public_origin = os.environ.get("COINTENT_PUBLIC_ORIGIN", "http://127.0.0.1:8811").rstrip("/")
     auth = Auth(verifier=StaticTokenVerifier(token), issuer=public_origin,
-                resource=f"{public_origin}/mcp", required_scopes=("cointent",)) if token else None
+                resource=f"{public_origin}/mcp", required_scopes=("cointent.read",)) if token else None
     wire = compiled.server().build(auth=auth)
     public_host = public_origin.split("://", 1)[-1].split("/", 1)[0]
     security = TransportSecuritySettings(
@@ -120,11 +123,64 @@ def build_http_app() -> Starlette:
             await response(scope, receive, send)
             return
 
-        if path.startswith("/api/") and browser_auth.enabled and session_user is None:
+        protected_browser_path = path.startswith("/api/") or path.startswith("/internal/") or path.startswith("/ua-viewer")
+        if protected_browser_path and browser_auth.enabled and session_user is None:
             response = JSONResponse(
                 {"error": "unauthorized", "detail": "not logged in or session expired", "login_required": True},
                 status_code=401,
             )
+            await response(scope, receive, send)
+            return
+        if path.startswith("/ua-viewer"):
+            response = _serve_ua_viewer_asset(path)
+            await response(scope, receive, send)
+            return
+        if path.startswith("/internal/ua-viewer-data/"):
+            response = await _ua_viewer_data(request, session_user)
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/project-state" and request.method == "GET":
+            response = _direct_read(request, "project-state")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/understanding-refreshes" and request.method == "POST":
+            response = await _direct_write(request, session_user, "request-refresh")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/understanding-refresh" and request.method == "GET":
+            response = _direct_read(request, "inspect-refresh")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/current-level" and request.method == "GET":
+            response = _direct_read(request, "current-level")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/implementation-refs" and request.method == "GET":
+            response = _direct_read(request, "implementation-refs")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/ua-node-subjects" and request.method == "GET":
+            response = _direct_read(request, "ua-node-subjects")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/structure-design-diff" and request.method == "GET":
+            response = _direct_read(request, "structure-design-diff")
+            await response(scope, receive, send)
+            return
+        if path.startswith("/api/projects/") and path.endswith("/ua-viewer-sessions") and request.method == "POST":
+            response = await _direct_write(request, session_user, "viewer-session")
+            await response(scope, receive, send)
+            return
+        if path == "/api/v1/implementation-contexts" and request.method == "POST":
+            response = await _direct_write(request, session_user, "implementation-context")
+            await response(scope, receive, send)
+            return
+        if request.method == "POST" and path == "/api/v1/target-design-workspaces":
+            response = await _browser_write(request, session_user, "start-design")
+            await response(scope, receive, send)
+            return
+        if request.method == "POST" and path == "/api/v1/target-design-operations":
+            response = await _browser_write(request, session_user, "revise-design")
             await response(scope, receive, send)
             return
         if request.method == "POST" and path == "/api/v1/target-design-reviews":
@@ -160,7 +216,26 @@ async def _browser_write(request: Request, session_user: str | None, operation: 
         asset_root = Path(os.environ.get("COINTENT_DATA_ROOT", str(database.parent / "projects")))
         repository = CoIntentRepository(database, asset_root)
         actor = session_user or "local-human"
-        if operation == "review":
+        if operation == "start-design":
+            requested_baseline = str(payload.get("base_observed_revision_id", ""))
+            state = repository.project_state(str(payload.get("project_id", "")))
+            observed = state["observation"].get("observed_revision")
+            if observed is None or observed["id"] != requested_baseline:
+                raise ValueError("requested baseline is not the latest explicitly refreshed Observation")
+            result = repository.start_structure_design(
+                str(payload.get("project_id", "")),
+                str(payload.get("title", "")),
+                actor=actor,
+            )
+        elif operation == "revise-design":
+            result = repository.apply_design_operations_v04(
+                str(payload.get("workspace_id", "")),
+                str(payload.get("base_design_revision_id", "")),
+                payload.get("operations", []),
+                actor=actor,
+                rationale=str(payload.get("rationale", "")),
+            )
+        elif operation == "review":
             result = repository.submit_design_review_v04(
                 str(payload.get("workspace_id", "")),
                 [str(item) for item in payload.get("acceptance_criteria", [])],
@@ -186,6 +261,132 @@ async def _browser_write(request: Request, session_user: str | None, operation: 
         return JSONResponse({"error": "not_found", "detail": str(error)}, status_code=404)
     except ValueError as error:
         return JSONResponse({"error": "invalid_request", "detail": str(error)}, status_code=400)
+
+
+def _runtime_repository() -> CoIntentRepository:
+    database = Path(os.environ.get("COINTENT_DB_PATH", "runtime/cointent.db"))
+    asset_root = Path(os.environ.get("COINTENT_DATA_ROOT", str(database.parent / "projects")))
+    return CoIntentRepository(database, asset_root)
+
+
+def _direct_read(request: Request, operation: str) -> JSONResponse:
+    try:
+        repository = _runtime_repository()
+        query = request.query_params
+        if operation == "project-state":
+            result = repository.project_state(str(query.get("project_id", "idea-factory")))
+        elif operation == "inspect-refresh":
+            result = repository.get_understanding_refresh(str(query.get("job_id", "")))
+        elif operation == "current-level":
+            result = repository.read_current_level(
+                str(query.get("project_id", "idea-factory")),
+                focus_id=query.get("focus_id"), observed_revision_id=query.get("observed_revision_id"),
+            )
+        elif operation == "implementation-refs":
+            result = {"implementation_refs": repository.implementation_refs_for_subject(
+                str(query.get("observed_revision_id", "")), str(query.get("subject_id", "")),
+            )}
+        elif operation == "structure-design-diff":
+            result = repository.diff_structure_design(
+                str(query.get("workspace_id", "")),
+                from_revision_id=query.get("from_revision_id"),
+                to_revision_id=query.get("to_revision_id"),
+            )
+        else:
+            result = repository.semantic_subjects_for_ua_node(
+                str(query.get("ua_snapshot_id", "")), str(query.get("node_id", "")),
+            )
+        return JSONResponse(result)
+    except KeyError as error:
+        return JSONResponse({"error": "not_found", "detail": str(error)}, status_code=404)
+    except ValueError as error:
+        return JSONResponse({"error": "invalid_request", "detail": str(error)}, status_code=400)
+
+
+async def _direct_write(request: Request, session_user: str | None, operation: str) -> JSONResponse:
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        repository = _runtime_repository()
+        actor = session_user or "local-human"
+        if operation == "request-refresh":
+            result = repository.request_understanding_refresh(
+                str(payload.get("project_id", "")), requested_by=actor,
+            )
+        elif operation == "implementation-context":
+            result = repository.create_implementation_context(
+                str(payload.get("workspace_id", "")),
+                str(payload.get("design_revision_id", "")),
+                str(payload.get("expected_diff_digest", "")),
+                actor=actor,
+            )
+        else:
+            parts = [item for item in request.url.path.split("/") if item]
+            project_id = parts[2] if len(parts) >= 4 else ""
+            result = repository.create_ua_viewer_session(
+                project_id,
+                str(payload.get("observed_revision_id", "")),
+                str(payload.get("ua_snapshot_id", "")),
+                principal=actor,
+            )
+        return JSONResponse(result)
+    except KeyError as error:
+        return JSONResponse({"error": "not_found", "detail": str(error)}, status_code=404)
+    except (json.JSONDecodeError, ValueError) as error:
+        return JSONResponse({"error": "invalid_request", "detail": str(error)}, status_code=400)
+
+
+async def _ua_viewer_data(request: Request, session_user: str | None) -> JSONResponse:
+    try:
+        prefix = "/internal/ua-viewer-data/"
+        relative = request.url.path[len(prefix):]
+        token, separator, artifact = relative.partition("/")
+        if not separator or not token or not artifact:
+            raise ValueError("invalid UA viewer data path")
+        repository = _runtime_repository()
+        session = repository.resolve_ua_viewer_session(
+            token, principal=session_user or "local-human",
+        )
+        if artifact == "file-content.json":
+            result = repository.read_snapshot_source(session, str(request.query_params.get("path", "")))
+        else:
+            result = repository.ua_viewer_graph(session, artifact)
+            if result is None:
+                return JSONResponse(
+                    {"error": "optional artifact unavailable"}, status_code=404,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except KeyError as error:
+        return JSONResponse({"error": "not_found", "detail": str(error)}, status_code=404)
+    except ValueError as error:
+        return JSONResponse({"error": "invalid_request", "detail": str(error)}, status_code=400)
+
+
+def _serve_ua_viewer_asset(request_path: str) -> FileResponse | JSONResponse:
+    root = Path(os.environ.get("COINTENT_UA_VIEWER_ROOT", "web/ua-viewer-dist")).resolve()
+    relative = (
+        "index.html" if request_path in {"/ua-viewer", "/ua-viewer/"}
+        else request_path.removeprefix("/ua-viewer/")
+    )
+    target = (root / relative).resolve()
+    if root not in target.parents and target != root:
+        return JSONResponse({"error": "invalid_viewer_path"}, status_code=400)
+    if not target.is_file():
+        if "." not in Path(relative).name and (root / "index.html").is_file():
+            target = root / "index.html"
+        else:
+            return JSONResponse({
+                "error": "ua_viewer_not_built",
+                "detail": "Build the pinned UA Dashboard with scripts/build-ua-viewer.sh",
+            }, status_code=503)
+    return FileResponse(target, headers={
+        "Content-Security-Policy": "frame-ancestors 'self'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=31536000, immutable" if target.name != "index.html" else "no-cache",
+    })
 
 
 async def _login(request: Request, auth: SessionAuth, throttle: LoginThrottle) -> JSONResponse:

@@ -283,8 +283,8 @@ def build_implementation_bundle(
         f"Implement CoIntent change bundle for design revision {review.design_revision_id} against "
         f"code snapshot {base_code_snapshot_id}. Treat the listed semantic changes and acceptance criteria "
         "as the contract. Inspect the linked source evidence, modify code through the normal coding workflow, "
-        "and do not write CoIntent observation or design storage directly. After tests pass, produce a new full "
-        "code snapshot and Understand Anything observation for verification."
+        "and do not write CoIntent observation or design storage directly. After tests pass, stop. Do not trigger "
+        "a CoIntent scan; the next explicit understand or design request will refresh current truth on demand."
     )
     identity = {
         "project_id": review.project_id,

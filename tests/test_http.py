@@ -5,6 +5,7 @@ from starlette.testclient import TestClient
 
 from cointent.app import build_http_app
 from cointent.repository import CoIntentRepository
+from cointent.refresh import UnderstandingRefreshJob
 from cointent.scanner import Artifact, RepositorySnapshot
 
 
@@ -89,6 +90,20 @@ def test_browser_can_request_and_open_a_generated_observation_refinement(tmp_pat
         json.loads((fixtures / "domain-graph.json").read_text(encoding="utf-8")),
     )
     base = imported["observed_revision"]
+    refresh_request = repository.request_understanding_refresh("idea-factory", requested_by="test-user")
+    repository.claim_understanding_refresh(refresh_request["job"]["id"])
+    repository.finish_understanding_refresh(UnderstandingRefreshJob.model_validate(
+        refresh_request["job"],
+    ).model_copy(update={
+        "status": "completed",
+        "mode": "full",
+        "repository_revision": snapshot.revision,
+        "code_snapshot_id": snapshot.id,
+        "ua_snapshot_id": imported["ua_snapshot"]["id"],
+        "observed_revision_id": base["id"],
+        "completed_at": "2026-09-09T00:01:00+00:00",
+        "duration_ms": 1,
+    }))
     target = base["capabilities"][0]["responsibility_id"]
     monkeypatch.setenv("COINTENT_DB_PATH", str(database))
 
@@ -111,7 +126,6 @@ def test_browser_can_request_and_open_a_generated_observation_refinement(tmp_pat
             "base_observed_revision_id": base["id"],
             "title": "Next system",
             "rationale": "Begin from the verified current model.",
-            "actor": "human",
         })
         assert created_design.status_code == 200
         initial_design = created_design.json()
@@ -122,53 +136,54 @@ def test_browser_can_request_and_open_a_generated_observation_refinement(tmp_pat
             "base_design_revision_id": initial_design["revision"]["id"],
             "operations": [{"kind": "upsert_responsibility", "responsibility": changed_responsibility}],
             "rationale": "Capture the reviewed product expectation.",
-            "actor": "human",
         })
         assert changed_design.status_code == 200
+        changed_revision = changed_design.json()["revision"]
+        criteria_design = client.post("/api/v1/target-design-operations", json={
+            "workspace_id": initial_design["workspace"]["id"],
+            "base_design_revision_id": changed_revision["id"],
+            "operations": [{
+                "kind": "set_acceptance_criteria",
+                "acceptance_criteria": ["The faster return path is covered by an integration test."],
+            }],
+            "rationale": "Define observable success.",
+        })
+        assert criteria_design.status_code == 200
+        final_revision = criteria_design.json()["revision"]
         target_view = client.get("/api/v1/target-design-workspace", params={
             "project_id": "idea-factory",
             "workspace_id": initial_design["workspace"]["id"],
         })
-        review = client.post("/api/v1/target-design-reviews", json={
+        design_diff = client.get("/api/v1/structure-design-diff", params={
             "workspace_id": initial_design["workspace"]["id"],
-            "acceptance_criteria": ["The faster return path is covered by an integration test."],
+            "to_revision_id": final_revision["id"],
         })
-        assert review.status_code == 200
-        approval = client.post("/api/v1/target-design-approvals", json={
-            "review_id": review.json()["id"],
-        })
-        assert approval.status_code == 200
-        implementation_export = client.post("/api/v1/implementation-exports", json={
+        assert design_diff.status_code == 200
+        implementation_result = client.post("/api/v1/implementation-contexts", json={
             "workspace_id": initial_design["workspace"]["id"],
+            "design_revision_id": final_revision["id"],
+            "expected_diff_digest": design_diff.json()["diff_digest"],
         })
-        assert implementation_export.status_code == 200
-        verification = client.post("/api/v1/verifications", json={
-            "workspace_id": initial_design["workspace"]["id"],
+        assert implementation_result.status_code == 200
+        viewer = client.post(f"/api/projects/idea-factory/ua-viewer-sessions", json={
             "observed_revision_id": base["id"],
+            "ua_snapshot_id": imported["ua_snapshot"]["id"],
         })
-        assert verification.status_code == 200
-        blocked_convergence = client.post("/api/v1/verification-decisions", json={
-            "report_id": verification.json()["id"],
-            "decision": "converged",
-            "notes": "This must fail because the code coordinate is stale.",
-        })
-        needs_revision = client.post("/api/v1/verification-decisions", json={
-            "report_id": verification.json()["id"],
-            "decision": "needs_revision",
-            "notes": "Import a post-implementation observation before convergence.",
-        })
+        assert viewer.status_code == 200
+        token = viewer.json()["viewer_url"].split("session=", 1)[1].split("&", 1)[0]
+        viewer_graph = client.get(f"/internal/ua-viewer-data/{token}/knowledge-graph.json")
 
     assert child.status_code == 200
     assert child.json()["observed_revision"]["parent_revision_id"] == base["id"]
     assert child.json()["observed_revision"]["refinement"]["added_responsibilities"] == 2
     assert target_view.status_code == 200
     assert target_view.json()["revision"]["responsibilities"][0]["description"].endswith("return path.")
-    assert implementation_export.json()["approved_by"] == "local-human"
-    assert implementation_export.json()["acceptance_criteria"]
-    assert verification.json()["summary"]["stale"] > 0
-    assert blocked_convergence.status_code == 400
-    assert needs_revision.status_code == 200
-    assert needs_revision.json()["decision"] == "needs_revision"
+    implementation_export = implementation_result.json()["implementation_context"]
+    assert implementation_export["approved_by"] == "local-human"
+    assert implementation_export["acceptance_criteria"]
+    assert viewer_graph.status_code == 200
+    assert viewer_graph.json()["nodes"][0].get("languageNotes") is None
+    assert "languageNotes" not in viewer_graph.json()["nodes"][0]
     assert repository.get_observed_revision(base["id"])["content_digest"] == base["content_digest"]
 
 

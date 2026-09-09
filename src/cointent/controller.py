@@ -29,7 +29,25 @@ def _repository(node: Tool) -> CoIntentRepository:
 
 def _actor(fallback: str = "local-agent") -> str:
     principal = current_principal()
-    return principal.subject if principal is not None else fallback
+    if principal is None:
+        return fallback
+    issuer = principal.issuer or "unknown-issuer"
+    if principal.subject:
+        return f"{issuer}/subject/{principal.subject}"
+    if principal.client_id:
+        return f"{issuer}/client/{principal.client_id}"
+    return f"{issuer}/authenticated-caller"
+
+
+def _require_scope(scope: str) -> None:
+    """Enforce product capabilities when a remote principal is present.
+
+    In-process/CLI execution has no principal and remains available to the
+    trusted operator runtime. Remote MCP calls are always principal-scoped.
+    """
+    principal = current_principal()
+    if principal is not None and scope not in principal.scopes:
+        raise PermissionError(f"principal lacks required scope {scope!r}")
 
 
 class Health(Tool):
@@ -47,6 +65,7 @@ class ListProjects(Tool):
         super().__init__(name="list-projects", description="List projects and current design versions.", read_only=True)
 
     async def invoke(self) -> dict[str, Any]:
+        _require_scope("cointent.read")
         return {"projects": _repository(self).list_projects()}
 
 
@@ -573,6 +592,146 @@ class ExportDesignVersion(Tool):
         return _repository(self).export_design(project_id, design_version)
 
 
+# Compact 0.4+ product surface. These tools expose product verbs and bounded
+# semantic levels; raw UA artifacts and observed graph writes are intentionally absent.
+
+
+class InspectProjectState(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="inspect-project-state", description="Read current coordinates, refresh state, target drawings, and allowed next actions.", read_only=True)
+
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return _repository(self).project_state(project_id)
+
+
+class RefreshCurrentUnderstanding(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="refresh-current-understanding", description="Request one idempotent on-demand code → UA → Observation refresh; accepts no graph content.", read_only=False)
+
+    async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
+        _require_scope("cointent.refresh.request")
+        return _repository(self).request_understanding_refresh(project_id, requested_by=_actor())
+
+
+class InspectUnderstandingRefresh(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="inspect-understanding-refresh", description="Read refresh progress, mode, changed files, diagnostics, and published coordinate.", read_only=True)
+
+    async def invoke(self, job_id: str) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return _repository(self).get_understanding_refresh(job_id)
+
+
+class ReadCurrentLevel(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="read-current-level", description="Read one web-equivalent semantic level of current truth with bounded implementation evidence.", read_only=True)
+
+    async def invoke(
+        self, project_id: str = "idea-factory", focus_id: str | None = None,
+        observed_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return _repository(self).read_current_level(
+            project_id, focus_id=focus_id, observed_revision_id=observed_revision_id,
+        )
+
+
+class StartStructureDesign(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="start-structure-design", description="Create an independent target drawing from the latest explicitly refreshed root Observation.", read_only=False)
+
+    async def invoke(self, project_id: str, title: str) -> dict[str, Any]:
+        _require_scope("cointent.design.write")
+        repository = _repository(self)
+        return repository.start_structure_design(project_id, title, actor=_actor())
+
+
+class ReadDesignLevel(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="read-design-level", description="Read one web-equivalent expected-function and target-structure level.", read_only=True)
+
+    async def invoke(
+        self, workspace_id: str, focus_id: str | None = None,
+        design_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return _repository(self).read_design_level(
+            workspace_id, focus_id=focus_id, design_revision_id=design_revision_id,
+        )
+
+
+class ReviseStructureDesign(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="revise-structure-design", description="Publish typed expected-function and complete target-structure operations as one immutable revision.", read_only=False)
+
+    async def invoke(
+        self, workspace_id: str, base_design_revision_id: str,
+        operations: list[DesignOperation], rationale: str,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.design.write")
+        return _repository(self).apply_design_operations_v04(
+            workspace_id, base_design_revision_id,
+            [item.model_dump(mode="json") for item in operations], actor=_actor(), rationale=rationale,
+        )
+
+
+class DiffStructureDesign(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="diff-structure-design", description="Compare target revisions or the complete target graph with its exact observed baseline.", read_only=True)
+
+    async def invoke(
+        self, workspace_id: str, from_revision_id: str | None = None,
+        to_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return _repository(self).diff_structure_design(
+            workspace_id, from_revision_id=from_revision_id, to_revision_id=to_revision_id,
+        )
+
+
+class CreateImplementationContext(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="create-implementation-context", description="After explicit user confirmation, freeze an exact reviewed diff as coding constraints; schedules no scan.", read_only=False)
+
+    async def invoke(
+        self, workspace_id: str, design_revision_id: str, expected_diff_digest: str,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.design.finalize")
+        return _repository(self).create_implementation_context(
+            workspace_id, design_revision_id, expected_diff_digest, actor=_actor(),
+        )
+
+
+class ListStructureDesignVersions(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="list-structure-design-versions", description="Read immutable target drawing history and rationale.", read_only=True)
+
+    async def invoke(self, workspace_id: str) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        workspace = _repository(self).get_design_workspace(workspace_id)
+        view = _repository(self).get_design_workspace_view(workspace["project_id"], workspace_id)
+        return {"workspace": workspace, "versions": [] if view is None else view["revisions"]}
+
+
+class CompareDesignToCurrent(Tool):
+    def __init__(self) -> None:
+        super().__init__(name="compare-design-to-current", description="Optionally compare a historical drawing with a later Observation without writing or merging either side.", read_only=True)
+
+    async def invoke(self, design_revision_id: str, observed_revision_id: str | None = None) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        repository = _repository(self)
+        design = repository.get_design_revision_v04(design_revision_id)
+        workspace = repository.get_design_workspace(design["workspace_id"])
+        selected = observed_revision_id
+        if selected is None:
+            coordinate = repository.observation_coordinate(workspace["project_id"])
+            if coordinate.get("observed_revision") is None:
+                raise ValueError("no current Observation is available")
+            selected = coordinate["observed_revision"]["id"]
+        return repository.compare_design_to_observation(design_revision_id, selected)
+
+
 class ModelResponsibilities(Skill):
     def __init__(self) -> None:
         super().__init__(
@@ -746,11 +905,11 @@ class HistoryAndPortability(Role):
         )
 
 
-class CoIntent(Role):
+class LegacyCoIntent(Role):
     def __init__(self) -> None:
         super().__init__(
             name="cointent",
-            description="Align plain-language specification, recursive Responsibility Workflows, and backend code.",
+            description="Compatibility surface for pre-0.4 browser routes.",
             instructions=(
                 "Follow the three-level chain: specification → Responsibility Workflow → backend evidence. "
                 "Never substitute an architecture or code graph for the Responsibility model."
@@ -760,4 +919,100 @@ class CoIntent(Role):
         )
 
 
+class LearnCurrentSystem(Skill):
+    def __init__(self) -> None:
+        super().__init__(
+            name="learn-current-system",
+            description="Refresh and learn current truth one semantic page at a time.",
+            uses=(
+                "cointent/project-context/inspect-project-state",
+                "cointent/understand-current/refresh-current-understanding",
+                "cointent/understand-current/inspect-understanding-refresh",
+                "cointent/understand-current/read-current-level",
+            ),
+            instructions=(
+                "Inspect state first. Refresh only when the user asks to understand. Read one page-equivalent "
+                "level, and descend with a returned focus identifier only when requested. Never write observed data."
+            ),
+        )
+
+
+class DesignStructureFirst(Skill):
+    def __init__(self) -> None:
+        super().__init__(
+            name="design-structure-first",
+            description="Refresh, design the complete target graph, review its diff, then create coding context.",
+            uses=(
+                "cointent/project-context/inspect-project-state",
+                "cointent/understand-current/refresh-current-understanding",
+                "cointent/understand-current/inspect-understanding-refresh",
+                "cointent/design-future/start-structure-design",
+                "cointent/design-future/read-design-level",
+                "cointent/design-future/revise-structure-design",
+                "cointent/design-future/diff-structure-design",
+                "cointent/design-future/create-implementation-context",
+            ),
+            instructions=(
+                "Enter only after explicit structure-design intent. Refresh first, keep the baseline immutable, "
+                "revise expected functions and the complete target Responsibility/Workflow graph, and show the "
+                "exact diff before finalization. Create implementation context only after explicit confirmation. "
+                "Stop after coding context; never trigger a post-code scan."
+            ),
+        )
+
+
+class ProjectContext(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="project-context", description="Select a project and inspect its immutable coordinates.",
+            instructions="Inspect project state before selecting any current or design coordinate.",
+            tools=[ListProjects(), InspectProjectState()],
+        )
+
+
+class UnderstandCurrent(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="understand-current", description="Refresh and read code-derived current truth on demand.",
+            instructions=(
+                "Current truth is code → pinned Understand Anything → validated projection. Never accept graph "
+                "content or turn conversation into an observed write. Return only one page-equivalent level."
+            ),
+            skills=[LearnCurrentSystem()],
+            tools=[RefreshCurrentUnderstanding(), InspectUnderstandingRefresh(), ReadCurrentLevel()],
+        )
+
+
+class DesignFuture(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="design-future", description="Design and review a separate target structure before code.",
+            instructions=(
+                "Use only after explicit design intent. Refresh first and never rebase silently. Target drawings "
+                "are independent history and never become observed truth. Finalization schedules no scan."
+            ),
+            skills=[DesignStructureFirst()],
+            tools=[
+                StartStructureDesign(), ReadDesignLevel(), ReviseStructureDesign(), DiffStructureDesign(),
+                CreateImplementationContext(), ListStructureDesignVersions(), CompareDesignToCurrent(),
+            ],
+        )
+
+
+class CoIntent(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="cointent",
+            description="Understand current code truth on demand and design a separate future structure on demand.",
+            instructions=(
+                "Inspect project state first. Route what exists to understand-current. Enter design-future only "
+                "after explicit design intent and refresh before a new drawing. Read one semantic page per call. "
+                "Never translate conversation or target design into an observed write. Stop after implementation "
+                "context and compare a historical design with later reality only when requested."
+            ),
+            children=[ProjectContext(), UnderstandCurrent(), DesignFuture()],
+        )
+
+
 app = Contexture(name="cointent", roots=(CoIntent,), channels=CoIntentChannels)
+legacy_app = Contexture(name="cointent-legacy", roots=(LegacyCoIntent,), channels=CoIntentChannels)

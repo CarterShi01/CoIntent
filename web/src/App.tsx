@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
-  applyTargetDesignOperations, approveTargetDesignReview, createTargetDesignWorkspace,
-  createVerificationReport, decideVerification, exportImplementationBundle, fetchObservation, fetchSession, fetchTargetDesignWorkspace,
-  listProjects, loadWorkspace, login, logout, requestObservationExpansion, submitTargetDesignReview,
+  applyTargetDesignOperations, createImplementationContext, createTargetDesignWorkspace,
+  createUaViewerSession, fetchStructureDesignDiff,
+  fetchObservation, fetchSession, fetchTargetDesignWorkspace, fetchUaNodeSubjects,
+  inspectUnderstandingRefresh, listProjects, loadWorkspace, login, logout,
+  requestObservationExpansion, requestUnderstandingRefresh,
 } from "./api";
 import type {
   AlignmentBaseline, ChangeSet, DesignVersion, Finding, ImplementationLink, ModelResponse,
-  ImplementationChangeBundle, ObservationCoordinate, OverviewResponse, Project, Proposal, Responsibility, SpecificationItem,
-  SpecificationResponsibilityLink, TargetDesignOperation, TargetDesignView, Workflow,
+  ImplementationContextResult, ImplementationRef, ObservationCoordinate, OverviewResponse, Project,
+  Proposal, Responsibility, SpecificationItem, SpecificationResponsibilityLink, TargetDesignOperation,
+  StructureDesignDiff, TargetDesignView, UaSemanticSubject, UaViewerSession, UnderstandingRefreshJob, Workflow,
 } from "./types";
 
 type Workspace = {
@@ -22,6 +25,7 @@ type Workspace = {
 };
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; user: string | null };
 type ProcessMode = "understand" | "design";
+type UnderstandSubview = "system" | "implementation";
 type ExpansionNotice = { nodeId: string; tone: "working" | "done" | "atomic" | "failed"; message: string };
 
 export default function App() {
@@ -33,6 +37,14 @@ export default function App() {
   const [observation, setObservation] = useState<ObservationCoordinate | undefined>();
   const [targetDesign, setTargetDesign] = useState<TargetDesignView | null | undefined>();
   const [mode, setMode] = useState<ProcessMode>(() => location.pathname.endsWith("/design") ? "design" : "understand");
+  const [understandSubview, setUnderstandSubview] = useState<UnderstandSubview>(() =>
+    new URLSearchParams(location.search).get("view") === "implementation" ? "implementation" : "system");
+  const [routeKey, setRouteKey] = useState(0);
+  const [refreshJob, setRefreshJob] = useState<UnderstandingRefreshJob | null>(null);
+  const [designStartPending, setDesignStartPending] = useState(false);
+  const [viewerSession, setViewerSession] = useState<UaViewerSession | null>(null);
+  const [viewerFocus, setViewerFocus] = useState<ImplementationRef | null>(null);
+  const [viewerOriginId, setViewerOriginId] = useState("");
   const [selectedObserved, setSelectedObserved] = useState("");
   const [expansionNotice, setExpansionNotice] = useState<ExpansionNotice | null>(null);
   const [mobilePane, setMobilePane] = useState<"functions" | "structure" | "details">("functions");
@@ -48,7 +60,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const syncPath = () => setMode(location.pathname.endsWith("/design") ? "design" : "understand");
+    const syncPath = () => {
+      setMode(location.pathname.endsWith("/design") ? "design" : "understand");
+      setUnderstandSubview(
+        new URLSearchParams(location.search).get("view") === "implementation" ? "implementation" : "system",
+      );
+      setRouteKey((current) => current + 1);
+    };
     addEventListener("popstate", syncPath);
     return () => removeEventListener("popstate", syncPath);
   }, []);
@@ -57,7 +75,8 @@ export default function App() {
     if (auth.state !== "in") return;
     listProjects().then((items) => {
       setProjects(items);
-      setProjectId((current) => current || items[0]?.id || "");
+      const requested = new URLSearchParams(location.search).get("project");
+      setProjectId((current) => current || items.find((item) => item.id === requested)?.id || items[0]?.id || "");
     }).catch(handleFailure);
   }, [auth.state]);
 
@@ -66,9 +85,13 @@ export default function App() {
     setWorkspace(null);
     setObservation(undefined);
     setTargetDesign(undefined);
+    setViewerSession(null);
+    setViewerFocus(null);
+    const query = new URLSearchParams(location.search);
+    const linkedRevision = query.get("project") === projectId ? query.get("observed_revision") ?? undefined : undefined;
     Promise.all([
       loadWorkspace(projectId, designVersion),
-      fetchObservation(projectId),
+      fetchObservation(projectId, linkedRevision),
       fetchTargetDesignWorkspace(projectId),
     ]).then(([next, observed, target]) => {
       setWorkspace(next);
@@ -81,8 +104,45 @@ export default function App() {
       setPath(root ? [root.id] : []);
       setForwardIds([]);
       setSelectedSpec(model.specification_items[0]?.id ?? "");
+      if (query.get("view") === "implementation" && observed.observed_revision && observed.ua_snapshot) {
+        const requestedUa = query.get("ua_snapshot");
+        if (requestedUa && requestedUa !== observed.ua_snapshot.id) {
+          throw new Error("The implementation-map link does not match the selected Observation.");
+        }
+        const requestedNode = query.get("node");
+        const ref = observed.observed_revision.implementation_refs.find((item) =>
+          item.preferred_focus_node_id === requestedNode || item.structural_ua_node_ids.includes(requestedNode ?? ""),
+        ) ?? null;
+        setViewerFocus(ref);
+        setViewerOriginId(query.get("from") ?? ref?.subject_id ?? "");
+        return createUaViewerSession(projectId, observed.observed_revision.id, observed.ua_snapshot.id)
+          .then(setViewerSession);
+      }
     }).catch(handleFailure);
-  }, [auth.state, projectId, designVersion]);
+  }, [auth.state, projectId, designVersion, routeKey]);
+
+  useEffect(() => {
+    if (!refreshJob || !["queued", "running"].includes(refreshJob.status)) return;
+    const timer = window.setInterval(() => {
+      inspectUnderstandingRefresh(refreshJob.id).then(async (job) => {
+        setRefreshJob(job);
+        if (job.status === "completed") {
+          const observed = await fetchObservation(projectId);
+          setObservation(observed);
+          setSelectedObserved(observed.observed_revision?.capabilities[0]?.responsibility_id
+            ?? observed.observed_revision?.responsibilities[0]?.id ?? "");
+          setViewerSession(null);
+          if (designStartPending && job.observed_revision_id) {
+            await createTargetFromBaseline(job.observed_revision_id);
+            setDesignStartPending(false);
+          }
+        } else if (job.status === "failed" && designStartPending) {
+          setDesignStartPending(false);
+        }
+      }).catch(handleFailure);
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [refreshJob?.id, refreshJob?.status, projectId, designStartPending]);
 
   function handleFailure(reason: unknown) {
     const message = errorText(reason);
@@ -92,9 +152,95 @@ export default function App() {
 
   function chooseMode(next: ProcessMode) {
     if (next === mode) return;
-    history.pushState({}, "", next === "design" ? "/design" : "/understand");
+    const query = new URLSearchParams({ project: projectId });
+    history.pushState({}, "", `${next === "design" ? "/design" : "/understand"}?${query}`);
     setMode(next);
     setMobilePane("functions");
+  }
+
+  function chooseProject(nextProjectId: string) {
+    const query = new URLSearchParams({ project: nextProjectId });
+    if (mode === "understand" && understandSubview === "implementation") query.set("view", "implementation");
+    history.pushState({}, "", `${mode === "design" ? "/design" : "/understand"}?${query}`);
+    setDesignVersion(undefined);
+    setProjectId(nextProjectId);
+  }
+
+  async function updateUnderstanding() {
+    try {
+      const result = await requestUnderstandingRefresh(projectId);
+      setRefreshJob(result.job);
+    } catch (reason) {
+      handleFailure(reason);
+    }
+  }
+
+  async function ensureViewer(nextObservation = observation): Promise<UaViewerSession | null> {
+    const revision = nextObservation?.observed_revision;
+    const ua = nextObservation?.ua_snapshot;
+    if (!revision || !ua) return null;
+    if (viewerSession?.observed_revision_id === revision.id && viewerSession.ua_snapshot_id === ua.id
+        && Date.parse(viewerSession.expires_at) > Date.now() + 30_000) {
+      return viewerSession;
+    }
+    const created = await createUaViewerSession(projectId, revision.id, ua.id);
+    setViewerSession(created);
+    return created;
+  }
+
+  async function chooseUnderstandSubview(next: UnderstandSubview) {
+    setUnderstandSubview(next);
+    const query = new URLSearchParams(location.search);
+    query.set("project", projectId);
+    if (next === "implementation") query.set("view", "implementation");
+    else query.delete("view");
+    history.pushState({}, "", `/understand${query.size ? `?${query}` : ""}`);
+    if (next === "implementation") {
+      try { await ensureViewer(); } catch (reason) { handleFailure(reason); }
+    }
+  }
+
+  async function openImplementation(ref: ImplementationRef, originId: string) {
+    try {
+      setViewerFocus(ref);
+      setViewerOriginId(originId);
+      setUnderstandSubview("implementation");
+      await ensureViewer();
+      const query = new URLSearchParams({
+        project: projectId,
+        view: "implementation",
+        observed_revision: ref.observed_revision_id,
+        ua_snapshot: ref.ua_snapshot_id,
+        node: ref.preferred_focus_node_id ?? "",
+        from: originId,
+      });
+      history.pushState({}, "", `/understand?${query}`);
+    } catch (reason) {
+      handleFailure(reason);
+    }
+  }
+
+  async function openBaselineImplementation(revisionId: string, nodeId: string) {
+    try {
+      const baseline = await fetchObservation(projectId, revisionId);
+      const refs = baseline.observed_revision?.implementation_refs.filter((item) => item.subject_id === nodeId) ?? [];
+      const ref = refs.find((item) => item.role === "primary") ?? refs[0];
+      if (!ref) throw new Error("No implementation reference exists for this baseline node.");
+      setObservation(baseline);
+      setViewerSession(null);
+      chooseMode("understand");
+      setViewerFocus(ref);
+      setViewerOriginId(nodeId);
+      setUnderstandSubview("implementation");
+      const created = await createUaViewerSession(projectId, revisionId, ref.ua_snapshot_id);
+      setViewerSession(created);
+      history.pushState({}, "", `/understand?${new URLSearchParams({
+        project: projectId, view: "implementation", observed_revision: revisionId,
+        ua_snapshot: ref.ua_snapshot_id, node: ref.preferred_focus_node_id ?? "", from: nodeId,
+      })}`);
+    } catch (reason) {
+      handleFailure(reason);
+    }
   }
 
   if (error) return <Failure message={error} />;
@@ -189,19 +335,28 @@ export default function App() {
     }
   }
 
+  async function createTargetFromBaseline(observedRevisionId: string) {
+    const project = projects.find((item) => item.id === projectId);
+    await createTargetDesignWorkspace(
+      projectId,
+      observedRevisionId,
+      `${project?.name ?? projectId} target design`,
+      "Create an independent target from the latest explicitly refreshed current structure.",
+    );
+    setTargetDesign(await fetchTargetDesignWorkspace(projectId));
+  }
+
   async function startTargetDesign() {
-    const observed = observation?.observed_revision;
-    if (!observed) return;
     try {
-      const project = projects.find((item) => item.id === projectId);
-      await createTargetDesignWorkspace(
-        projectId,
-        observed.id,
-        `${project?.name ?? projectId} target design`,
-        "Create an independent target from the selected code-derived baseline.",
-      );
-      setTargetDesign(await fetchTargetDesignWorkspace(projectId));
+      setDesignStartPending(true);
+      const result = await requestUnderstandingRefresh(projectId);
+      setRefreshJob(result.job);
+      if (result.job.status === "completed" && result.job.observed_revision_id) {
+        await createTargetFromBaseline(result.job.observed_revision_id);
+        setDesignStartPending(false);
+      }
     } catch (reason) {
+      setDesignStartPending(false);
       handleFailure(reason);
     }
   }
@@ -233,55 +388,30 @@ export default function App() {
     setTargetDesign(await fetchTargetDesignWorkspace(projectId, targetDesign.workspace.id));
   }
 
-  async function submitTargetReview(criteria: string[]) {
-    if (!targetDesign) return;
-    await submitTargetDesignReview(targetDesign.workspace.id, criteria);
-    await refreshTargetDesign();
+  async function readTargetDiff(): Promise<StructureDesignDiff> {
+    if (!targetDesign) throw new Error("No target drawing is open.");
+    return fetchStructureDesignDiff(targetDesign.workspace.id, targetDesign.revision.id);
   }
 
-  async function approveTargetReview(reviewId: string) {
-    await approveTargetDesignReview(reviewId);
-    await refreshTargetDesign();
-  }
-
-  async function exportTargetBundle(): Promise<ImplementationChangeBundle | null> {
-    if (!targetDesign) return null;
-    const bundle = await exportImplementationBundle(targetDesign.workspace.id);
-    const blob = new Blob([`${JSON.stringify(bundle, null, 2)}\n`], { type: "application/json" });
+  async function buildImplementationContext(diffDigest: string): Promise<ImplementationContextResult> {
+    if (!targetDesign) throw new Error("No target drawing is open.");
+    const result = await createImplementationContext(
+      targetDesign.workspace.id, targetDesign.revision.id, diffDigest,
+    );
+    const blob = new Blob([`${JSON.stringify(result, null, 2)}\n`], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `${bundle.id}.json`;
+    link.download = `${result.implementation_context.id}.json`;
     link.click();
     URL.revokeObjectURL(link.href);
     await refreshTargetDesign();
-    return bundle;
-  }
-
-  async function verifyTargetImplementation() {
-    if (!targetDesign?.implementation_export) return;
-    const latest = await fetchObservation(projectId);
-    const observed = latest.observed_revision;
-    if (!observed || observed.code_snapshot_id === targetDesign.implementation_export.base_code_snapshot_id) {
-      throw new Error("No post-implementation observation exists yet. Import a new full snapshot and UA map first.");
-    }
-    if (targetDesign.verification_report?.observed_revision_id === observed.id) {
-      throw new Error("This observation was already reviewed. Import a later full snapshot and UA map first.");
-    }
-    await createVerificationReport(targetDesign.workspace.id, observed.id);
-    await refreshTargetDesign();
-  }
-
-  async function decideTargetVerification(
-    reportId: string, decision: "converged" | "needs_revision", notes: string,
-  ) {
-    await decideVerification(reportId, decision, notes);
-    await refreshTargetDesign();
+    return result;
   }
 
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><IntentMark /><div><strong>CoIntent</strong><span>Program logic, made legible</span></div></div>
-      <label className="project-picker"><span>Project</span><select value={projectId} onChange={(event) => { setDesignVersion(undefined); setProjectId(event.target.value); }}>
+      <label className="project-picker"><span>Project</span><select value={projectId} onChange={(event) => chooseProject(event.target.value)}>
         {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
       </select></label>
       {mode === "understand" ? <div className="model-coordinate observation-coordinate">
@@ -305,16 +435,34 @@ export default function App() {
         <span>Code → current model</span><strong>Understand current</strong><small>Read only</small>
       </button>
       <button className={mode === "design" ? "active design" : ""} aria-current={mode === "design" ? "page" : undefined} onClick={() => chooseMode("design")}>
-        <span>Intent → implementation diff</span><strong>Design future</strong><small>Editable target</small>
+        <span>Intent → target structure → diff</span><strong>Design future</strong><small>Editable target</small>
       </button>
     </nav>
-    <nav className={`mobile-pane-tabs ${mode}`} aria-label="Workspace area">
+    {mode === "understand" && <nav className="understand-subviews" aria-label="Current understanding view">
+      <div><button className={understandSubview === "system" ? "active" : ""} onClick={() => void chooseUnderstandSubview("system")}><span>System view</span><small>Functions and Responsibilities</small></button>
+      <button className={understandSubview === "implementation" ? "active" : ""} disabled={!observation.observed_revision} onClick={() => void chooseUnderstandSubview("implementation")}><span>Implementation map</span><small>UA code and dependencies</small></button></div>
+      <button className="update-understanding" disabled={refreshJob?.status === "queued" || refreshJob?.status === "running"} onClick={() => void updateUnderstanding()}>
+        {refreshJob?.status === "queued" ? "Update queued" : refreshJob?.status === "running" ? "Updating understanding…" : "Update understanding"}
+        <b aria-hidden="true">↻</b>
+      </button>
+      {refreshJob && <span className={`refresh-status ${refreshJob.status}`} title={refreshJob.error ?? refreshJob.fallback_reason ?? ""}>
+        {refreshJob.status === "completed" ? `${refreshJob.mode} · ${refreshJob.changed_files.length} changed` : refreshJob.status}
+      </span>}
+    </nav>}
+    {!(mode === "understand" && understandSubview === "implementation") && <nav className={`mobile-pane-tabs ${mode}`} aria-label="Workspace area">
       <button className={mobilePane === "functions" ? "active" : ""} onClick={() => setMobilePane("functions")}>{mode === "understand" ? "Functions" : "Expected"}</button>
       <button className={mobilePane === "structure" ? "active" : ""} onClick={() => setMobilePane("structure")}>Structure</button>
       <button className={mobilePane === "details" ? "active" : ""} onClick={() => setMobilePane("details")}>{mode === "understand" ? "Evidence" : "Details"}</button>
-    </nav>
+    </nav>}
 
-    {mode === "understand" ? <UnderstandingWorkspace
+    {mode === "understand" && understandSubview === "implementation" ? <UaImplementationMap
+      coordinate={observation}
+      session={viewerSession}
+      focus={viewerFocus}
+      originSemanticId={viewerOriginId}
+      onRenew={() => ensureViewer()}
+      onBack={(revisionId, subjectId) => { void openObservedRevision(revisionId, subjectId); void chooseUnderstandSubview("system"); }}
+    /> : mode === "understand" ? <UnderstandingWorkspace
       coordinate={observation}
       selectedId={selectedObserved}
       onSelect={(id) => { setSelectedObserved(id); setExpansionNotice(null); setMobilePane("structure"); }}
@@ -322,52 +470,50 @@ export default function App() {
       onOpenRevision={(revisionId, nodeId) => void openObservedRevision(revisionId, nodeId)}
       expansionNotice={expansionNotice}
       mobilePane={mobilePane}
+      onOpenImplementation={(ref, subjectId) => void openImplementation(ref, subjectId)}
     /> : targetDesign
       ? <TargetDesignWorkspace
           view={targetDesign}
           mobilePane={mobilePane}
           onApply={(operations, rationale) => applyTargetOperations(operations, rationale)}
           onOpenRevision={(revisionId) => void openTargetRevision(revisionId)}
-          onSubmitReview={submitTargetReview}
-          onApproveReview={approveTargetReview}
-          onExport={exportTargetBundle}
-          onVerify={verifyTargetImplementation}
-          onDecideVerification={decideTargetVerification}
-          onViewBaseline={(revisionId, nodeId) => { chooseMode("understand"); void openObservedRevision(revisionId, nodeId); }}
+          onReadDiff={readTargetDiff}
+          onCreateContext={buildImplementationContext}
+          onStartNew={() => void startTargetDesign()}
+          startPending={designStartPending}
+          onViewBaseline={(revisionId, nodeId) => void openBaselineImplementation(revisionId, nodeId)}
         />
       : <TargetDesignEmpty
           hasObservation={Boolean(observation.observed_revision)}
+          pending={designStartPending}
           onCreate={() => void startTargetDesign()}
         />}
   </div>;
 }
 
-function TargetDesignEmpty({ hasObservation, onCreate }: { hasObservation: boolean; onCreate: () => void }) {
+function TargetDesignEmpty({ hasObservation, pending, onCreate }: { hasObservation: boolean; pending: boolean; onCreate: () => void }) {
   return <main className="target-design-empty">
     <section>
       <span className="empty-kicker">Independent target space</span>
       <h1>Design what should exist next.</h1>
       <p>The target starts as a value clone of one named current-system revision. From then on it advances through its own immutable <code>des-*</code> revisions; changing it never changes the code-derived view.</p>
-      <button disabled={!hasObservation} onClick={onCreate}>{hasObservation ? "Create target from current structure" : "Generate a current structure first"}<b>→</b></button>
+      <button disabled={pending} onClick={onCreate}>{pending ? "Updating the baseline…" : hasObservation ? "Update baseline and start design" : "Generate current structure and start"}<b>→</b></button>
     </section>
   </main>;
 }
 
 function TargetDesignWorkspace({
-  view, mobilePane, onApply, onOpenRevision, onSubmitReview, onApproveReview, onExport, onViewBaseline,
-  onVerify, onDecideVerification,
+  view, mobilePane, onApply, onOpenRevision, onReadDiff, onCreateContext, onStartNew,
+  startPending, onViewBaseline,
 }: {
   view: TargetDesignView;
   mobilePane: "functions" | "structure" | "details";
   onApply: (operations: TargetDesignOperation[], rationale: string) => Promise<void>;
   onOpenRevision: (revisionId: string) => void;
-  onSubmitReview: (criteria: string[]) => Promise<void>;
-  onApproveReview: (reviewId: string) => Promise<void>;
-  onExport: () => Promise<ImplementationChangeBundle | null>;
-  onVerify: () => Promise<void>;
-  onDecideVerification: (
-    reportId: string, decision: "converged" | "needs_revision", notes: string,
-  ) => Promise<void>;
+  onReadDiff: () => Promise<StructureDesignDiff>;
+  onCreateContext: (diffDigest: string) => Promise<ImplementationContextResult>;
+  onStartNew: () => void;
+  startPending: boolean;
   onViewBaseline: (revisionId: string, nodeId: string) => void;
 }) {
   const revision = view.revision;
@@ -449,7 +595,9 @@ function TargetDesignWorkspace({
           { kind: "upsert_feature_link", feature_link: { id: newDesignId("des-link"), expected_feature_id: featureId, responsibility_id: responsibilityId, kind: "realizes" } },
         ], `Add expected function “${name}” and its initial target Responsibility.`);
       }} />
-      <div className="design-provenance"><span>Separate truth coordinate</span><label>Revision<select value={revision.id} onChange={(event) => onOpenRevision(event.target.value)}>{view.revisions.map((item, index) => <option value={item.id} key={item.id}>{index === 0 ? "Current · " : "History · "}{item.id.slice(0, 16)}</option>)}</select></label><small>{revision.created_by} · {revision.rationale}</small></div>
+      <div className="design-provenance"><span>Separate truth coordinate</span><label>Revision<select value={revision.id} onChange={(event) => onOpenRevision(event.target.value)}>{view.revisions.map((item, index) => <option value={item.id} key={item.id}>{index === 0 ? "Current · " : "History · "}{item.id.slice(0, 16)}</option>)}</select></label><small>{revision.created_by} · {revision.rationale}</small>
+        {view.workspace.status !== "draft" && <button className="new-design-action" disabled={startPending} onClick={onStartNew}>{startPending ? "Updating baseline…" : "Update baseline and start another design"}</button>}
+      </div>
     </aside>
 
     <section className="logic-pane target-logic">
@@ -472,16 +620,10 @@ function TargetDesignWorkspace({
       editable={editable}
       problem={problem}
       onApply={apply}
-      review={view.review}
       workspaceStatus={view.workspace.status}
       implementationExport={view.implementation_export}
-      verificationReport={view.verification_report}
-      verificationDecision={view.verification_decision}
-      onSubmitReview={onSubmitReview}
-      onApproveReview={onApproveReview}
-      onExport={onExport}
-      onVerify={onVerify}
-      onDecideVerification={onDecideVerification}
+      onReadDiff={onReadDiff}
+      onCreateContext={onCreateContext}
       onViewBaseline={(observedId) => onViewBaseline(revision.base_observed_revision_id, observedId)}
     />
   </main>;
@@ -507,9 +649,8 @@ function NewExpectedFunction({ disabled, onCreate }: {
 }
 
 function TargetDesignInspector({
-  revision, responsibility, baselineObservedId, busy, editable, problem, review, workspaceStatus,
-  implementationExport, verificationReport, verificationDecision, onApply, onSubmitReview,
-  onApproveReview, onExport, onVerify, onDecideVerification, onViewBaseline,
+  revision, responsibility, baselineObservedId, busy, editable, problem, workspaceStatus,
+  implementationExport, onApply, onReadDiff, onCreateContext, onViewBaseline,
 }: {
   revision: TargetDesignView["revision"];
   responsibility?: Responsibility;
@@ -517,30 +658,26 @@ function TargetDesignInspector({
   busy: boolean;
   editable: boolean;
   problem: string;
-  review: TargetDesignView["review"];
   workspaceStatus: string;
   implementationExport: TargetDesignView["implementation_export"];
-  verificationReport: TargetDesignView["verification_report"];
-  verificationDecision: TargetDesignView["verification_decision"];
   onApply: (operations: TargetDesignOperation[], rationale: string) => Promise<void>;
-  onSubmitReview: (criteria: string[]) => Promise<void>;
-  onApproveReview: (reviewId: string) => Promise<void>;
-  onExport: () => Promise<ImplementationChangeBundle | null>;
-  onVerify: () => Promise<void>;
-  onDecideVerification: (
-    reportId: string, decision: "converged" | "needs_revision", notes: string,
-  ) => Promise<void>;
+  onReadDiff: () => Promise<StructureDesignDiff>;
+  onCreateContext: (diffDigest: string) => Promise<ImplementationContextResult>;
   onViewBaseline: (observedId: string) => void;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [childName, setChildName] = useState("");
   const [childDescription, setChildDescription] = useState("");
-  const [criterion, setCriterion] = useState("");
+  const [criteriaText, setCriteriaText] = useState(revision.acceptance_criteria.join("\n"));
+  const [designDiff, setDesignDiff] = useState<StructureDesignDiff | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewProblem, setReviewProblem] = useState("");
-  const [verificationNotes, setVerificationNotes] = useState("");
   useEffect(() => { setName(responsibility?.name ?? ""); setDescription(responsibility?.description ?? ""); }, [responsibility?.id, responsibility?.name, responsibility?.description]);
+  useEffect(() => {
+    setCriteriaText(revision.acceptance_criteria.join("\n"));
+    setDesignDiff(null);
+  }, [revision.id, revision.acceptance_criteria]);
   if (!responsibility) return <aside className="inspector"><p className="empty">Add an expected function to begin the target graph.</p></aside>;
 
   const saveResponsibility = () => onApply([{ kind: "upsert_responsibility", responsibility: {
@@ -570,6 +707,8 @@ function TargetDesignInspector({
     catch (reason) { setReviewProblem(errorText(reason)); }
     finally { setReviewBusy(false); }
   }
+  const acceptanceCriteria = criteriaText.split("\n").map((item) => item.trim()).filter(Boolean);
+  const criteriaUnchanged = JSON.stringify(acceptanceCriteria) === JSON.stringify(revision.acceptance_criteria);
 
   return <aside className="inspector target-inspector">
     <div className="inspector-heading"><span className="eyebrow">Design controls</span><h2>{responsibility.name}</h2><code>{responsibility.id}</code></div>
@@ -587,56 +726,32 @@ function TargetDesignInspector({
       ? <><code>{baselineObservedId}</code><button onClick={() => onViewBaseline(baselineObservedId)}>View exact baseline →</button></>
       : <p>Target-only node · not implemented yet</p>}</section>
     <section className="design-review-card">
-      <span>Human review gate</span>
-      {workspaceStatus === "draft" && <>
-        <h3>Define success before approval</h3>
-        <p>The semantic diff is calculated by the server. Add a behavior that the implementation can prove.</p>
-        <label>Acceptance criterion<textarea value={criterion} onChange={(event) => setCriterion(event.target.value)} placeholder="A user can…" /></label>
-        <button disabled={reviewBusy || !editable || !criterion.trim()} onClick={() => void reviewAction(() => onSubmitReview([criterion.trim()]))}>{reviewBusy ? "Calculating diff…" : "Submit target for review"}</button>
-      </>}
-      {review && workspaceStatus === "in_review" && <>
-        <h3>{review.changes.length} semantic changes awaiting approval</h3>
-        <ul>{review.changes.slice(0, 6).map((item) => <li key={item.id}><b>{item.change_type}</b>{item.name}<small>{item.fields.join(", ") || "removed"}</small></li>)}</ul>
-        <p>{review.acceptance_criteria[0]?.statement}</p>
-        <button disabled={reviewBusy} onClick={() => void reviewAction(() => onApproveReview(review.id))}>{reviewBusy ? "Recording approval…" : "Approve implementation change"}</button>
-      </>}
-      {review && ["approved", "exported", "verifying", "converged", "needs_revision"].includes(workspaceStatus) && <>
-        <h3>{workspaceStatus === "exported" ? "Implementation bundle ready" : workspaceStatus === "approved" ? "Target approved" : "Approved implementation contract"}</h3>
-        <p>{review.changes.length} semantic changes · {review.acceptance_criteria.length} acceptance checks.</p>
+      <span>Review target drawing</span>
+      {workspaceStatus === "draft" ? <>
+        <h3>Structure first, implementation second</h3>
+        <p>Record a testable outcome, then review the complete target graph against its frozen observed baseline.</p>
+        <label>Acceptance criteria<textarea value={criteriaText} onChange={(event) => setCriteriaText(event.target.value)} placeholder={"A user can…\nThe system preserves…"} /><small>One testable outcome per line.</small></label>
+        <button disabled={reviewBusy || !editable || !acceptanceCriteria.length} onClick={() => void reviewAction(async () => {
+          if (!criteriaUnchanged) {
+            await onApply([{ kind: "set_acceptance_criteria", acceptance_criteria: acceptanceCriteria }], "Define the target drawing acceptance criteria.");
+            return;
+          }
+          setDesignDiff(await onReadDiff());
+        })}>{reviewBusy ? "Preparing review…" : criteriaUnchanged ? "Review structure diff" : "Save acceptance criteria"}</button>
+        {designDiff && <div className="target-diff" aria-live="polite">
+          <h3>{designDiff.changes.length} semantic changes</h3>
+          <ul>{designDiff.changes.slice(0, 8).map((item) => <li key={item.id}><b>{item.change_type}</b>{item.name}<small>{item.fields.join(", ") || "removed"}</small></li>)}</ul>
+          <code title={designDiff.diff_digest}>diff {designDiff.diff_digest.slice(0, 16)}</code>
+          <button disabled={reviewBusy} onClick={() => void reviewAction(() => onCreateContext(designDiff.diff_digest))}>{reviewBusy ? "Freezing context…" : "Use this design for implementation"}</button>
+          <small>This freezes this exact revision and diff for the coding Agent. It does not start a scan after coding.</small>
+        </div>}
+      </> : <>
+        <h3>Implementation context ready</h3>
+        <p>The reviewed target graph remains an immutable design version. It was not merged into current truth.</p>
         {implementationExport && <code>{implementationExport.id}</code>}
-        {!["verifying", "converged", "needs_revision"].includes(workspaceStatus) && <button disabled={reviewBusy} onClick={() => void reviewAction(onExport)}>{reviewBusy ? "Building bundle…" : implementationExport ? "Download bundle again" : "Export for coding Agent"}</button>}
+        <small>The next scan happens only when you later ask to understand the system or begin another design.</small>
       </>}
     </section>
-    {implementationExport && <section className="verification-card">
-      <span>Implementation verification</span>
-      {workspaceStatus === "exported" && !verificationReport && <>
-        <h3>Compare the implementation</h3>
-        <p>Import a later full code snapshot and Understand Anything map, then compare that observed truth with the approved target.</p>
-        <button disabled={reviewBusy} onClick={() => void reviewAction(onVerify)}>{reviewBusy ? "Reading latest observation…" : "Verify latest observed revision"}</button>
-      </>}
-      {verificationReport && !verificationDecision && <>
-        <h3>Evidence comparison awaiting you</h3>
-        {review && <div className="verification-criteria"><span>Acceptance checks</span>{review.acceptance_criteria.map((item) => <p key={item.id}>{item.statement}</p>)}</div>}
-        <div className="verification-summary">
-          {(["matched", "missing", "unexpected", "ambiguous", "stale"] as const).map((status) => <div className={status} key={status}><strong>{verificationReport.summary[status] ?? 0}</strong><span>{status}</span></div>)}
-        </div>
-        <div className="verification-claims">{verificationReport.claims.slice(0, 8).map((claim) => <article key={claim.id} className={claim.status}>
-          <span>{claim.status} · {claim.kind.replace("_", " ")}</span><strong>{claim.name}</strong><p>{claim.explanation}</p>
-        </article>)}</div>
-        <label>Human conclusion<textarea value={verificationNotes} onChange={(event) => setVerificationNotes(event.target.value)} placeholder="What was verified, and what should happen next?" /></label>
-        <div className="verification-actions">
-          <button disabled={reviewBusy || !verificationNotes.trim()} onClick={() => void reviewAction(() => onDecideVerification(verificationReport.id, "needs_revision", verificationNotes))}>Needs revision</button>
-          <button disabled={reviewBusy || !verificationNotes.trim() || (["missing", "ambiguous", "stale"] as const).some((status) => (verificationReport.summary[status] ?? 0) > 0)} onClick={() => void reviewAction(() => onDecideVerification(verificationReport.id, "converged", verificationNotes))}>Accept as converged</button>
-        </div>
-      </>}
-      {verificationReport && verificationDecision && <>
-        <h3>{verificationDecision.decision === "converged" ? "Implementation accepted" : "Revision requested"}</h3>
-        <p>{verificationDecision.notes}</p>
-        <code>{verificationReport.observed_revision_id}</code>
-        <small>{verificationDecision.actor} · {new Date(verificationDecision.decided_at).toLocaleString()}</small>
-        {verificationDecision.decision === "needs_revision" && <button disabled={reviewBusy} onClick={() => void reviewAction(onVerify)}>{reviewBusy ? "Reading latest observation…" : "Verify another observed revision"}</button>}
-      </>}
-    </section>}
     {reviewProblem && <div className="login-error" role="alert">{reviewProblem}</div>}
     <section className="revision-audit"><span>Current revision</span><code>{revision.id}</code><small>{revision.created_by} · {revision.rationale}</small></section>
     {problem && <div className="login-error" role="alert">{problem}</div>}
@@ -647,14 +762,98 @@ function newDesignId(prefix: "des-feature" | "des-resp" | "des-link" | "des-occ"
   return `${prefix}-${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
 }
 
+function UaImplementationMap({ coordinate, session, focus, originSemanticId, onRenew, onBack }: {
+  coordinate: ObservationCoordinate;
+  session: UaViewerSession | null;
+  focus: ImplementationRef | null;
+  originSemanticId: string;
+  onRenew: () => Promise<UaViewerSession | null>;
+  onBack: (observedRevisionId: string, subjectId: string) => void;
+}) {
+  const iframe = useRef<HTMLIFrameElement | null>(null);
+  const [ready, setReady] = useState(false);
+  const [focusStatus, setFocusStatus] = useState<"waiting" | "focused" | "fallback" | "not_found">("waiting");
+  const [subjects, setSubjects] = useState<UaSemanticSubject[]>([]);
+  const revision = coordinate.observed_revision;
+
+  useEffect(() => { setReady(false); setSubjects([]); setFocusStatus("waiting"); }, [session?.viewer_url]);
+
+  useEffect(() => {
+    if (!session) return;
+    const receive = (event: MessageEvent) => {
+      if (event.origin !== location.origin || event.source !== iframe.current?.contentWindow) return;
+      const message = event.data as Record<string, unknown>;
+      if (message.protocolVersion !== 1 || message.uaSnapshotId !== session?.ua_snapshot_id) return;
+      if (message.type === "ua.cointent.ready") setReady(true);
+      if (message.type === "ua.cointent.focus-result") {
+        setFocusStatus(message.status as "focused" | "fallback" | "not_found");
+      }
+      if (message.type === "ua.cointent.node-selected" && typeof message.nodeId === "string") {
+        fetchUaNodeSubjects(session.ua_snapshot_id, message.nodeId)
+          .then((result) => setSubjects(result.subjects))
+          .catch(() => setSubjects([]));
+      }
+    };
+    addEventListener("message", receive);
+    return () => removeEventListener("message", receive);
+  }, [session?.ua_snapshot_id, iframe]);
+
+  useEffect(() => {
+    if (!ready || !focus?.preferred_focus_node_id || !iframe.current?.contentWindow) return;
+    setFocusStatus("waiting");
+    iframe.current.contentWindow.postMessage({
+      type: "cointent.ua.focus-nodes",
+      protocolVersion: 1,
+      requestId: crypto.randomUUID(),
+      uaSnapshotId: focus.ua_snapshot_id,
+      primaryNodeId: focus.preferred_focus_node_id,
+      nodeIds: focus.structural_ua_node_ids,
+      lineRange: focus.line_range ?? undefined,
+      openSource: true,
+    }, location.origin);
+  }, [ready, focus?.id, iframe]);
+
+  useEffect(() => {
+    if (!session) return;
+    const delay = Math.max(1000, Date.parse(session.expires_at) - Date.now() - 30_000);
+    const timer = window.setTimeout(() => { void onRenew(); }, delay);
+    return () => window.clearTimeout(timer);
+  }, [session?.expires_at]);
+
+  if (!revision || !coordinate.ua_snapshot) return <main className="observation-empty"><section>
+    <span className="empty-kicker">Implementation map unavailable</span><h1>Update understanding first.</h1>
+    <p>The UA Dashboard opens only against a validated immutable code and graph coordinate.</p>
+  </section></main>;
+
+  return <main className="ua-map-shell">
+    <header className="ua-coordinate-header">
+      <div><span>Implementation map</span><strong>Official Understand Anything Dashboard</strong></div>
+      <dl><div><dt>Code</dt><dd>{coordinate.code_snapshot?.revision.slice(0, 10)}</dd></div><div><dt>UA snapshot</dt><dd>{coordinate.ua_snapshot.id.slice(0, 18)}</dd></div><div><dt>Observation</dt><dd>{revision.id.slice(0, 18)}</dd></div></dl>
+      {focus && <span className={`focus-result ${focusStatus}`}>{focusStatus === "waiting" ? "Locating implementation…" : focusStatus.replace("_", " ")}</span>}
+    </header>
+    <section className="ua-frame-region">
+      {session ? <iframe ref={(node) => { iframe.current = node; }} src={session.viewer_url} title="Understand Anything implementation map" />
+        : <div className="ua-loading"><IntentMark /><strong>Opening the pinned code map…</strong></div>}
+      <aside className={`semantic-return ${subjects.length ? "open" : ""}`} aria-live="polite">
+        <span>Selected implementation supports</span>
+        {subjects.length ? subjects.map((item) => <button key={`${item.observed_revision_id}-${item.subject_id}`} onClick={() => onBack(item.observed_revision_id, item.subject_id)}>
+          <small>{item.subject_kind.replace("_", " ")}</small><strong>{item.name}</strong><b>Back to system structure →</b>
+        </button>) : <p>Select a mapped UA node to see its related system functions and Responsibilities.</p>}
+        {!subjects.length && originSemanticId && <button onClick={() => onBack(revision.id, originSemanticId)}><strong>Return to originating Responsibility</strong><b>← System view</b></button>}
+      </aside>
+    </section>
+  </main>;
+}
+
 function UnderstandingWorkspace({
-  coordinate, selectedId, onSelect, onExpand, onOpenRevision, expansionNotice, mobilePane,
+  coordinate, selectedId, onSelect, onExpand, onOpenRevision, onOpenImplementation, expansionNotice, mobilePane,
 }: {
   coordinate: ObservationCoordinate;
   selectedId: string;
   onSelect: (id: string) => void;
   onExpand: (id: string) => void;
   onOpenRevision: (revisionId: string, nodeId: string) => void;
+  onOpenImplementation: (ref: ImplementationRef, subjectId: string) => void;
   expansionNotice: ExpansionNotice | null;
   mobilePane: "functions" | "structure" | "details";
 }) {
@@ -663,9 +862,7 @@ function UnderstandingWorkspace({
     <section>
       <span className="empty-kicker">No verified current model</span>
       <h1>Generate the view from code.</h1>
-      <p>Capture a full repository snapshot, run Understand Anything, then import its knowledge and domain graph through the operator pipeline. A design draft is never shown here as current code.</p>
-      <code>cointent scan &lt;repo&gt; --project-id {coordinate.project_id} --scope full</code>
-      <code>cointent import-understand-anything --project-id {coordinate.project_id} …</code>
+      <p>Choose <strong>Update understanding</strong> above. CoIntent will capture code, run the pinned Understand Anything engine, validate the result, and publish a read-only current model. A design draft is never shown here as current code.</p>
     </section>
   </main>;
 
@@ -684,6 +881,14 @@ function UnderstandingWorkspace({
   const children = (selected?.workflow?.nodes ?? []).map((node) => byId.get(node.responsibility_id)).filter(Boolean) as Responsibility[];
   const evidenceBySubject = new Map(revision.bindings.map((item) => [item.subject_id, item.evidence]));
   const selectedEvidence = selected ? evidenceBySubject.get(selected.id) ?? [] : [];
+  const selectedRefs = selected
+    ? (revision.implementation_refs ?? []).filter((item) => item.subject_id === selected.id)
+    : [];
+  const primaryRef = selectedRefs.find((item) => item.role === "primary") ?? selectedRefs[0];
+  const combinedRef = primaryRef ? {
+    ...primaryRef,
+    structural_ua_node_ids: Array.from(new Set(selectedRefs.flatMap((item) => item.structural_ua_node_ids))),
+  } : undefined;
   const lineage: Responsibility[] = [];
   let cursor: Responsibility | undefined = selected;
   while (cursor) {
@@ -732,6 +937,15 @@ function UnderstandingWorkspace({
 
     <aside className="inspector observed-inspector">
       <div className="inspector-heading"><span className="eyebrow">Why this is shown</span><h2>Source evidence</h2><code>{selected?.source_ids[0]}</code></div>
+      <section className="implementation-ref-block"><div className="section-title"><div><span className="eyebrow">Code map bridge</span><h3>Implementation references</h3></div><strong>{selectedRefs.length}</strong></div>
+        {selectedRefs.length ? selectedRefs.map((item) => <article className="implementation-ref" key={item.id}>
+          <div><span className={item.role}>{item.role}</span><small>{item.resolution.replaceAll("_", " ")}</small></div>
+          <strong>{item.symbol ?? item.file_path.split("/").at(-1)}</strong>
+          <code>{item.file_path}{item.line_range ? `:${item.line_range[0]}–${item.line_range[1]}` : ""}</code>
+          <button disabled={!item.preferred_focus_node_id} onClick={() => onOpenImplementation(item, selected!.id)}>Open in code map <b>→</b></button>
+        </article>) : <p className="empty">No resolvable UA node exists for this semantic item.</p>}
+        {combinedRef && selectedRefs.length > 1 && <button className="show-all-refs" onClick={() => onOpenImplementation(combinedRef, selected!.id)}>Show all in code map <b>→</b></button>}
+      </section>
       <section className="evidence-block"><div className="section-title"><div><span className="eyebrow">Captured code</span><h3>Bindings</h3></div><strong>{selectedEvidence.length}</strong></div>
         {selectedEvidence.map((item) => <article className="evidence-row" key={`${item.ua_node_id}-${item.path}-${item.start_line}`}><span>{item.origin === "ua_semantic" ? "Semantic + structural proof" : "UA structural"}</span><code>{item.path}{item.start_line ? `:${item.start_line}${item.end_line && item.end_line !== item.start_line ? `–${item.end_line}` : ""}` : ""}</code><p>Anchored by {item.structural_ua_node_ids.length} structural node{item.structural_ua_node_ids.length === 1 ? "" : "s"} · digest {item.source_digest.slice(0, 12)}</p></article>)}
       </section>

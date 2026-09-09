@@ -1,6 +1,6 @@
 # CoIntent 0.4 Execution Path
 
-**Status:** core data loop delivered; on-demand MCP surface and incremental UA runner next
+**Status:** on-demand product loop and UA Dashboard integration implemented; production coverage review next
 **Decision baseline:** [design-v0.4](design-v0.4.md), [ADR-0001](adr-0001-codemap-engine.md)
 **Delivery rule:** ship one Understand Anything path first; introduce no generic analyzer framework.
 
@@ -39,9 +39,23 @@ Implemented in the first working slice:
 - real-browser verification of current, refinement, atomic, parent-return, design, review/context-export,
   optional later comparison, and mobile flows.
 
-The immutable data primitives are implemented. The next slice is the compact Agent MCP surface, authenticated
-browser HTTP surface, directly embedded UA Dashboard, and a persistent runner that invokes UA incrementally. The
-current CLI still imports externally completed UA JSON.
+The current implementation also includes:
+
+- the compact public MCP Role graph and two orchestration Skills, with per-operation scopes and principal-derived
+  authorship;
+- a queued, persistent trusted refresh worker with full/unchanged/incremental selection, declared fallback,
+  exact clean-Git worktrees, persistent UA state, pre-publication validation, and failure preservation;
+- first-class `ImplementationRef` records with exact code/UA/Observation lineage, deterministic resolution,
+  primary/supporting roles, and reverse lookup;
+- an authenticated HTTP-only viewer session protocol with short-lived tokens and exact content-addressed source;
+- a reproducible build of the official UA 2.9.6 Dashboard at the pinned commit, using a minimal same-origin
+  data/focus bridge and no UA MCP server;
+- stable forward deep links and reverse navigation between System view and the implementation map;
+- a browser design journey of expected functions → complete target structure → reviewed semantic diff → exact
+  implementation context, with no post-coding scan or mandatory convergence stage.
+
+The remaining release work is deployment configuration of the trusted headless Agent command, review of a real
+Idea Factory UA projection, and production rollout. The operator import stays available as a recovery path.
 
 ## 1. Target vertical loop
 

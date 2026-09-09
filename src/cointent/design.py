@@ -54,7 +54,8 @@ class DesignRevision(DesignRecord):
     baseline_links: list[DesignBaselineLink] = Field(default_factory=list)
     rationale: str
     unresolved_questions: list[str] = Field(default_factory=list)
-    created_by: Literal["human", "agent"]
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    created_by: str
     created_at: str
     content_digest: str
 
@@ -105,7 +106,7 @@ class DesignWorkspace(DesignRecord):
         "converged", "needs_revision", "cancelled",
     ] = "draft"
     current_design_revision_id: str
-    created_by: Literal["human", "agent"]
+    created_by: str
     created_at: str
     updated_at: str
 
@@ -115,6 +116,7 @@ class DesignOperation(DesignRecord):
         "set_intent", "upsert_expected_feature", "remove_expected_feature",
         "upsert_responsibility", "remove_responsibility", "set_workflow",
         "upsert_feature_link", "remove_feature_link", "set_unresolved_questions",
+        "set_acceptance_criteria",
     ]
     summary: str | None = None
     expected_feature: ExpectedFeature | None = None
@@ -125,6 +127,7 @@ class DesignOperation(DesignRecord):
     feature_link: FeatureResponsibilityLink | None = None
     feature_link_id: str | None = None
     unresolved_questions: list[str] | None = None
+    acceptance_criteria: list[str] | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> "DesignOperation":
@@ -138,6 +141,7 @@ class DesignOperation(DesignRecord):
             "upsert_feature_link": self.feature_link is not None,
             "remove_feature_link": self.feature_link_id is not None,
             "set_unresolved_questions": self.unresolved_questions is not None,
+            "set_acceptance_criteria": self.acceptance_criteria is not None,
         }[self.kind]
         if not required:
             raise ValueError(f"design operation {self.kind!r} is missing its payload")
@@ -176,7 +180,7 @@ class DesignOperationRecord(DesignRecord):
     result_design_revision_id: str
     operation_index: int = Field(ge=0)
     operation: DesignOperation
-    actor: Literal["human", "agent"]
+    actor: str
     rationale: str
     created_at: str
 
@@ -186,7 +190,7 @@ def seed_design_from_observation(
     *,
     workspace_id: str,
     title: str,
-    actor: Literal["human", "agent"],
+    actor: str,
     rationale: str,
     created_at: str | None = None,
 ) -> DesignRevision:
@@ -256,6 +260,7 @@ def seed_design_from_observation(
         baseline_links=baseline_links,
         rationale=rationale,
         unresolved_questions=[],
+        acceptance_criteria=[],
         created_by=actor,
         created_at=timestamp,
     )
@@ -265,7 +270,7 @@ def apply_design_operations(
     base: DesignRevision,
     operations: list[DesignOperation],
     *,
-    actor: Literal["human", "agent"],
+    actor: str,
     rationale: str,
     created_at: str | None = None,
 ) -> DesignRevision:
@@ -278,6 +283,7 @@ def apply_design_operations(
     links = {item.id: item for item in base.feature_responsibility_links}
     summary = base.summary
     questions = list(base.unresolved_questions)
+    criteria = list(base.acceptance_criteria)
     for operation in operations:
         if operation.kind == "set_intent":
             summary = operation.summary or ""
@@ -303,6 +309,8 @@ def apply_design_operations(
             links.pop(operation.feature_link_id or "", None)
         elif operation.kind == "set_unresolved_questions":
             questions = operation.unresolved_questions or []
+        elif operation.kind == "set_acceptance_criteria":
+            criteria = [item.strip() for item in operation.acceptance_criteria or [] if item.strip()]
 
     return _make_revision(
         workspace_id=base.workspace_id,
@@ -316,6 +324,7 @@ def apply_design_operations(
         baseline_links=base.baseline_links,
         rationale=rationale,
         unresolved_questions=questions,
+        acceptance_criteria=criteria,
         created_by=actor,
         created_at=created_at or datetime.now(UTC).isoformat(),
     )

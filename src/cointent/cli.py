@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 from .experiments import idea_factory_model
@@ -37,6 +38,20 @@ def parser() -> argparse.ArgumentParser:
     ua.add_argument("--domain-graph")
     ua.add_argument("--ua-tool-revision", required=True)
 
+    bind = commands.add_parser("bind-checkout", help="bind a trusted local checkout for on-demand refreshes")
+    bind.add_argument("--project-id", required=True)
+    bind.add_argument("repository")
+
+    refresh = commands.add_parser("refresh", help="request an on-demand understanding refresh")
+    refresh.add_argument("--project-id", required=True)
+    refresh.add_argument("--run", action="store_true", help="run this job in the current trusted worker process")
+
+    worker = commands.add_parser("refresh-worker", help="run the trusted on-demand understanding worker")
+    selection = worker.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--job-id", help="process one queued job")
+    selection.add_argument("--forever", action="store_true", help="poll and process queued jobs continuously")
+    worker.add_argument("--poll-seconds", type=float, default=2.0)
+
     export = commands.add_parser("export-model", help="export the current accepted model as JSON")
     export.add_argument("--project-id", required=True)
     export.add_argument("--output", required=True)
@@ -58,6 +73,41 @@ def main(argv: list[str] | None = None) -> None:
         _import_fixture(args)
     elif args.command == "import-understand-anything":
         _import_understand_anything(args)
+    elif args.command == "bind-checkout":
+        result = CoIntentRepository(args.database).set_project_checkout(args.project_id, args.repository)
+        print(json.dumps(result, indent=2))
+    elif args.command == "refresh":
+        repository = CoIntentRepository(args.database)
+        result = repository.request_understanding_refresh(args.project_id, requested_by="operator")
+        if args.run and result["job"]["status"] == "queued":
+            from .refresh import run_refresh_job
+            result = {"duplicate": result["duplicate"], "job": run_refresh_job(repository, result["job"]["id"])}
+        print(json.dumps(result, indent=2))
+    elif args.command == "refresh-worker":
+        from .refresh import run_refresh_job
+        repository = CoIntentRepository(args.database)
+        if args.job_id:
+            print(json.dumps(run_refresh_job(repository, args.job_id), indent=2))
+        else:
+            delay = max(0.25, min(args.poll_seconds, 60.0))
+            try:
+                while True:
+                    job_id = repository.next_queued_understanding_refresh()
+                    if job_id is None:
+                        time.sleep(delay)
+                        continue
+                    try:
+                        print(json.dumps(run_refresh_job(repository, job_id)), flush=True)
+                    except Exception as error:
+                        try:
+                            job = repository.get_understanding_refresh(job_id)
+                        except KeyError:
+                            continue
+                        # A concurrent worker claiming the same candidate is normal.
+                        if job["status"] == "failed":
+                            print(json.dumps({"job_id": job_id, "status": "failed", "error": str(error)}), flush=True)
+            except KeyboardInterrupt:
+                return
     elif args.command == "serve":
         if args.host not in {"127.0.0.1", "localhost", "::1"} and not os.environ.get("COINTENT_MCP_TOKEN"):
             raise SystemExit("COINTENT_MCP_TOKEN is required for a non-loopback server")
@@ -85,6 +135,7 @@ def _scan(args: argparse.Namespace) -> None:
     )
     repository = CoIntentRepository(args.database)
     repository.ensure_project(args.project_id, args.name or args.project_id.replace("-", " ").title(), snapshot.repository)
+    repository.set_project_checkout(args.project_id, args.repository)
     result = repository.ingest_snapshot(args.project_id, snapshot.model_dump())
     current = repository.get_model(args.project_id)
     if args.seed_idea_factory and not current["model"]["responsibilities"]:

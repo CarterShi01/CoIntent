@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
+import subprocess
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -29,6 +31,7 @@ from .delivery import (
     build_implementation_bundle,
     build_verification_decision,
     build_verification_report,
+    semantic_target_diff,
 )
 from .models import ImplementationLink, ModelPatch, ProjectModel, apply_model_patch, semantic_diff
 from .observation import (
@@ -42,6 +45,18 @@ from .observation import (
     project_observed_model,
 )
 from .scanner import RepositorySnapshot, is_backend_logic_candidate, snapshot_diff
+from .refresh import UnderstandingRefreshJob
+from .viewer import (
+    MAX_SOURCE_BYTES,
+    SourceContent,
+    UaViewerSession,
+    expiry,
+    is_expired,
+    issue_viewer_token,
+    safe_source_path,
+    source_language,
+    token_digest,
+)
 
 
 def _now() -> str:
@@ -129,6 +144,23 @@ class CoIntentRepository:
                     status TEXT NOT NULL, result_observed_revision_id TEXT REFERENCES observed_model_revisions(id),
                     request_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS understanding_refresh_jobs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    status TEXT NOT NULL, job_json TEXT NOT NULL, requested_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS project_runtime_config (
+                    project_id TEXT PRIMARY KEY REFERENCES projects(id),
+                    checkout_path TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ua_viewer_sessions (
+                    id TEXT PRIMARY KEY, token_digest TEXT NOT NULL UNIQUE,
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    observed_revision_id TEXT NOT NULL REFERENCES observed_model_revisions(id),
+                    ua_snapshot_id TEXT NOT NULL REFERENCES understand_anything_snapshots(id),
+                    code_snapshot_id TEXT NOT NULL REFERENCES snapshots(id),
+                    principal TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS design_workspaces_v04 (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                     base_observed_revision_id TEXT NOT NULL REFERENCES observed_model_revisions(id),
@@ -205,6 +237,10 @@ class CoIntentRepository:
                     ON observed_model_revisions(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_observation_expansions_project
                     ON observation_expansion_requests(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_understanding_refresh_jobs_project
+                    ON understanding_refresh_jobs(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_ua_viewer_sessions_project
+                    ON ua_viewer_sessions(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_design_workspaces_v04_project
                     ON design_workspaces_v04(project_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_design_revisions_v04_workspace
@@ -297,6 +333,34 @@ class CoIntentRepository:
         project = self.get_project(project_id)
         self._write_project_asset(project)
         return project
+
+    def set_project_checkout(self, project_id: str, checkout_path: str | Path) -> dict[str, str]:
+        """Bind a trusted worker checkout without exposing host paths as product data."""
+        self.get_project(project_id)
+        path = Path(checkout_path).resolve()
+        if not path.is_dir() or not (path / ".git").exists():
+            raise ValueError("project checkout must be a local Git working tree")
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO project_runtime_config(project_id,checkout_path,updated_at)
+                   VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+                   checkout_path=excluded.checkout_path,updated_at=excluded.updated_at""",
+                (project_id, str(path), _now()),
+            )
+        return {"project_id": project_id, "checkout_path": str(path)}
+
+    def get_project_checkout(self, project_id: str) -> Path:
+        self.get_project(project_id)
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT checkout_path FROM project_runtime_config WHERE project_id=?", (project_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("project has no trusted local checkout; configure it with cointent bind-checkout")
+        path = Path(row["checkout_path"])
+        if not path.is_dir() or not (path / ".git").exists():
+            raise ValueError("configured project checkout is unavailable")
+        return path
 
     def get_model(self, project_id: str, version: int | None = None) -> dict[str, Any]:
         with self.connection() as db:
@@ -877,6 +941,475 @@ class CoIntentRepository:
             "observed_revision": revision,
         }
 
+    # Explicit on-demand understanding jobs. Only a trusted worker publishes observations.
+
+    def request_understanding_refresh(self, project_id: str, *, requested_by: str) -> dict[str, Any]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            active = db.execute(
+                """SELECT job_json FROM understanding_refresh_jobs
+                   WHERE project_id=? AND status IN ('queued','running')
+                   ORDER BY created_at DESC LIMIT 1""",
+                (project_id,),
+            ).fetchone()
+            if active is not None:
+                return {"duplicate": True, "job": json.loads(active["job_json"])}
+            created = _now()
+            job = UnderstandingRefreshJob(
+                id=_id("understanding-refresh"), project_id=project_id,
+                requested_by=requested_by, created_at=created,
+            )
+            db.execute(
+                """INSERT INTO understanding_refresh_jobs(
+                   id,project_id,status,job_json,requested_by,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (job.id, project_id, job.status, job.model_dump_json(), requested_by, created, created),
+            )
+        return {"duplicate": False, "job": job.model_dump(mode="json")}
+
+    def get_understanding_refresh(self, job_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT job_json FROM understanding_refresh_jobs WHERE id=?", (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown understanding refresh {job_id!r}")
+        return json.loads(row["job_json"])
+
+    def next_queued_understanding_refresh(self) -> str | None:
+        """Return the oldest queued job for a trusted worker to claim."""
+        with self.connection() as db:
+            row = db.execute(
+                """SELECT id FROM understanding_refresh_jobs
+                   WHERE status='queued' ORDER BY created_at ASC LIMIT 1"""
+            ).fetchone()
+        return None if row is None else str(row["id"])
+
+    def list_understanding_refreshes(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT job_json FROM understanding_refresh_jobs
+                   WHERE project_id=? ORDER BY created_at DESC LIMIT ?""",
+                (project_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [json.loads(row["job_json"]) for row in rows]
+
+    def claim_understanding_refresh(self, job_id: str) -> dict[str, Any]:
+        """Atomically claim a queued job for the trusted out-of-process worker."""
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT status,job_json FROM understanding_refresh_jobs WHERE id=?", (job_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown understanding refresh {job_id!r}")
+            if row["status"] != "queued":
+                raise ValueError("understanding refresh is not queued")
+            job = UnderstandingRefreshJob.model_validate_json(row["job_json"]).model_copy(update={
+                "status": "running", "started_at": _now(),
+            })
+            changed = db.execute(
+                """UPDATE understanding_refresh_jobs SET status='running',job_json=?,updated_at=?
+                   WHERE id=? AND status='queued'""",
+                (job.model_dump_json(), _now(), job_id),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("understanding refresh was claimed by another worker")
+        return job.model_dump(mode="json")
+
+    def finish_understanding_refresh(self, job: UnderstandingRefreshJob) -> dict[str, Any]:
+        if job.status not in {"completed", "failed"}:
+            raise ValueError("finished understanding refresh must be completed or failed")
+        with self.connection() as db:
+            changed = db.execute(
+                """UPDATE understanding_refresh_jobs SET status=?,job_json=?,updated_at=?
+                   WHERE id=? AND status='running'""",
+                (job.status, job.model_dump_json(), _now(), job.id),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("understanding refresh is not running")
+        return job.model_dump(mode="json")
+
+    def project_state(self, project_id: str) -> dict[str, Any]:
+        project = self.get_project(project_id)
+        observation = self.observation_coordinate(project_id)
+        refreshes = self.list_understanding_refreshes(project_id, 1)
+        latest_refresh = refreshes[0] if refreshes else None
+        workspaces = self.list_design_workspaces_v04(project_id)
+        observed = observation.get("observed_revision")
+        can_start_design = bool(
+            observed
+            and latest_refresh
+            and latest_refresh["status"] == "completed"
+            and latest_refresh["observed_revision_id"] == observed["id"]
+        )
+        return {
+            "project": project,
+            "observation": observation,
+            "latest_refresh": latest_refresh,
+            "active_target_drawings": [item for item in workspaces if item.get("status") == "draft"],
+            "allowed_next_actions": [
+                "update_understanding",
+                *(["read_current"] if observed else []),
+                *(["start_structure_design"] if can_start_design else []),
+            ],
+        }
+
+    def read_current_level(
+        self, project_id: str, *, focus_id: str | None = None,
+        observed_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        coordinate = self.observation_coordinate(project_id, observed_revision_id)
+        raw = coordinate.get("observed_revision")
+        if raw is None:
+            return {"coordinate": coordinate, "system_functions": [], "level": None}
+        revision = ObservedModelRevision.model_validate(raw)
+        responsibilities = {item.id: item for item in revision.responsibilities}
+        capabilities = revision.capabilities
+        if focus_id in {item.id for item in capabilities}:
+            focus_id = next(item.responsibility_id for item in capabilities if item.id == focus_id)
+        inbound = {
+            node.responsibility_id
+            for responsibility in revision.responsibilities if responsibility.workflow is not None
+            for node in responsibility.workflow.nodes
+        }
+        if focus_id is None:
+            roots = [item for item in revision.responsibilities if item.id not in inbound]
+            return {
+                "coordinate": _bounded_coordinate(coordinate),
+                "system_functions": [item.model_dump(mode="json") for item in capabilities],
+                "level": {
+                    "focus": None,
+                    "children": [_responsibility_summary(item) for item in roots],
+                    "edges": [],
+                    "implementation_refs": [],
+                    "continuation_focus_ids": [item.id for item in roots],
+                },
+            }
+        selected = responsibilities.get(focus_id)
+        if selected is None:
+            raise ValueError("focus_id is not part of the selected observed revision")
+        workflow = selected.workflow
+        child_ids = [] if workflow is None else [item.responsibility_id for item in workflow.nodes]
+        children = [responsibilities[item] for item in child_ids if item in responsibilities]
+        subject_ids = {selected.id, *child_ids}
+        refs = [
+            item.model_dump(mode="json") for item in revision.implementation_refs
+            if item.subject_id in subject_ids
+        ][:24]
+        return {
+            "coordinate": _bounded_coordinate(coordinate),
+            "system_functions": [item.model_dump(mode="json") for item in capabilities],
+            "level": {
+                "focus": _responsibility_summary(selected),
+                "children": [_responsibility_summary(item) for item in children],
+                "occurrences": [] if workflow is None else [item.model_dump(mode="json") for item in workflow.nodes],
+                "edges": [] if workflow is None else [item.model_dump(mode="json") for item in workflow.edges],
+                "implementation_refs": refs,
+                "continuation_focus_ids": [item.id for item in children if item.workflow is not None],
+            },
+        }
+
+    def read_design_level(
+        self, workspace_id: str, *, focus_id: str | None = None,
+        design_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        workspace = self.get_design_workspace(workspace_id)
+        revision = DesignRevision.model_validate(self.get_design_revision_v04(
+            design_revision_id or workspace["current_design_revision_id"]
+        ))
+        if revision.workspace_id != workspace_id:
+            raise ValueError("design revision does not belong to workspace")
+        responsibilities = {item.id: item for item in revision.responsibilities}
+        inbound = {
+            node.responsibility_id
+            for responsibility in revision.responsibilities if responsibility.workflow is not None
+            for node in responsibility.workflow.nodes
+        }
+        selected = responsibilities.get(focus_id) if focus_id is not None else None
+        if focus_id is not None and selected is None:
+            raise ValueError("focus_id is not part of the selected design revision")
+        if selected is None:
+            children = [item for item in revision.responsibilities if item.id not in inbound]
+            workflow = None
+        else:
+            workflow = selected.workflow
+            child_ids = [] if workflow is None else [item.responsibility_id for item in workflow.nodes]
+            children = [responsibilities[item] for item in child_ids if item in responsibilities]
+        return {
+            "workspace": workspace,
+            "design_coordinate": {
+                "design_revision_id": revision.id,
+                "base_observed_revision_id": revision.base_observed_revision_id,
+                "content_digest": revision.content_digest,
+            },
+            "expected_functions": [item.model_dump(mode="json") for item in revision.expected_features],
+            "level": {
+                "focus": None if selected is None else _responsibility_summary(selected),
+                "children": [_responsibility_summary(item) for item in children],
+                "occurrences": [] if workflow is None else [item.model_dump(mode="json") for item in workflow.nodes],
+                "edges": [] if workflow is None else [item.model_dump(mode="json") for item in workflow.edges],
+                "continuation_focus_ids": [item.id for item in children if item.workflow is not None],
+            },
+        }
+
+    def start_structure_design(self, project_id: str, title: str, *, actor: str) -> dict[str, Any]:
+        """Start only from the root Observation published by the latest explicit refresh."""
+        state = self.project_state(project_id)
+        refresh = state["latest_refresh"]
+        observed = state["observation"].get("observed_revision")
+        if not refresh or refresh["status"] != "completed" or not observed:
+            raise ValueError("update current understanding and wait for completion before starting design")
+        if refresh["observed_revision_id"] != observed["id"]:
+            raise ValueError("latest refresh does not match current truth; update understanding again")
+        return self.create_design_workspace(
+            project_id, observed["id"], title, actor=actor,
+            rationale="Start structure-first design from the explicitly refreshed current truth.",
+        )
+
+    def diff_structure_design(
+        self, workspace_id: str, *, from_revision_id: str | None = None,
+        to_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        workspace = self.get_design_workspace(workspace_id)
+        target = DesignRevision.model_validate(self.get_design_revision_v04(
+            to_revision_id or workspace["current_design_revision_id"]
+        ))
+        if target.workspace_id != workspace_id:
+            raise ValueError("target design revision does not belong to workspace")
+        if from_revision_id is None:
+            observed = ObservedModelRevision.model_validate(
+                self.get_observed_revision(workspace["base_observed_revision_id"])
+            )
+            changes = [item.model_dump(mode="json") for item in semantic_target_diff(target, observed)]
+            from_coordinate = {"kind": "observed_baseline", "id": observed.id}
+        else:
+            before = DesignRevision.model_validate(self.get_design_revision_v04(from_revision_id))
+            if before.workspace_id != workspace_id:
+                raise ValueError("source design revision does not belong to workspace")
+            changes = _target_revision_changes(before, target)
+            from_coordinate = {"kind": "design_revision", "id": before.id}
+        digest = hashlib.sha256(json.dumps({
+            "workspace_id": workspace_id, "from": from_coordinate, "to": target.id, "changes": changes,
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return {
+            "workspace_id": workspace_id,
+            "from": from_coordinate,
+            "to_design_revision_id": target.id,
+            "changes": changes,
+            "diff_digest": digest,
+        }
+
+    # Read-only UA Dashboard sessions. The raw token is returned once and never stored.
+
+    def create_ua_viewer_session(
+        self, project_id: str, observed_revision_id: str, ua_snapshot_id: str, *, principal: str,
+    ) -> dict[str, Any]:
+        revision = self.get_observed_revision(observed_revision_id)
+        if revision["project_id"] != project_id or revision["ua_snapshot_id"] != ua_snapshot_id:
+            raise ValueError("Observation and UA snapshot do not share the requested project lineage")
+        ua_snapshot = self.get_understand_anything_snapshot(ua_snapshot_id)
+        if ua_snapshot["code_snapshot_id"] != revision["code_snapshot_id"]:
+            raise ValueError("Observation, UA snapshot, and code snapshot lineage is inconsistent")
+        token, digest, session_id = issue_viewer_token()
+        created = _now()
+        session = UaViewerSession(
+            id=session_id, project_id=project_id, observed_revision_id=observed_revision_id,
+            ua_snapshot_id=ua_snapshot_id, code_snapshot_id=revision["code_snapshot_id"],
+            principal=principal, expires_at=expiry(), created_at=created,
+        )
+        with self.connection() as db:
+            db.execute("DELETE FROM ua_viewer_sessions WHERE expires_at<=?", (created,))
+            db.execute(
+                """INSERT INTO ua_viewer_sessions(
+                   id,token_digest,project_id,observed_revision_id,ua_snapshot_id,
+                   code_snapshot_id,principal,expires_at,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (session.id, digest, project_id, observed_revision_id, ua_snapshot_id,
+                 session.code_snapshot_id, principal, session.expires_at, created),
+            )
+        return {
+            "viewer_url": f"/ua-viewer/?session={token}&ua_snapshot={ua_snapshot_id}",
+            "project_id": project_id,
+            "observed_revision_id": observed_revision_id,
+            "ua_snapshot_id": ua_snapshot_id,
+            "code_snapshot_id": session.code_snapshot_id,
+            "expires_at": session.expires_at,
+        }
+
+    def resolve_ua_viewer_session(self, token: str, *, principal: str | None = None) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT * FROM ua_viewer_sessions WHERE token_digest=?", (token_digest(token),),
+            ).fetchone()
+        if row is None:
+            raise KeyError("unknown UA viewer session")
+        session = UaViewerSession(
+            id=row["id"], project_id=row["project_id"],
+            observed_revision_id=row["observed_revision_id"], ua_snapshot_id=row["ua_snapshot_id"],
+            code_snapshot_id=row["code_snapshot_id"], principal=row["principal"],
+            expires_at=row["expires_at"], created_at=row["created_at"],
+        )
+        if is_expired(session.expires_at):
+            raise ValueError("UA viewer session expired")
+        if principal is not None and session.principal != principal:
+            raise ValueError("UA viewer session belongs to another principal")
+        return session.model_dump(mode="json")
+
+    def ua_viewer_graph(self, session: dict[str, Any], kind: str) -> dict[str, Any] | None:
+        snapshot = UnderstandAnythingSnapshot.model_validate(
+            self.get_understand_anything_snapshot(session["ua_snapshot_id"])
+        )
+        if snapshot.code_snapshot_id != session["code_snapshot_id"]:
+            raise ValueError("UA viewer session lineage is inconsistent")
+        if kind == "knowledge-graph.json":
+            return snapshot.knowledge_graph.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if kind == "domain-graph.json":
+            return None if snapshot.domain_graph is None else snapshot.domain_graph.model_dump(
+                mode="json", by_alias=True, exclude_none=True,
+            )
+        if kind == "meta.json":
+            return {
+                "gitCommitHash": snapshot.knowledge_graph.project.git_commit_hash,
+                "analyzedAt": snapshot.knowledge_graph.project.analyzed_at,
+                "uaVersion": snapshot.ua_tool_revision,
+                "cointentUaSnapshotId": snapshot.id,
+            }
+        if kind == "config.json":
+            return {"autoUpdate": False, "embedded": True}
+        if kind == "diff-overlay.json":
+            return {"changedNodeIds": [], "affectedNodeIds": []}
+        if kind == "staleness.json":
+            def fresh(graph: UAKnowledgeGraph) -> dict[str, Any]:
+                return {
+                    "status": "fresh",
+                    "graphCommitHash": graph.project.git_commit_hash,
+                    "headCommitHash": graph.project.git_commit_hash,
+                    "changedFileCount": 0,
+                    "changedFiles": [],
+                    "commitsBehind": 0,
+                    "commitsAhead": 0,
+                    "lastAnalyzedAt": graph.project.analyzed_at,
+                }
+            return {
+                "graphs": {
+                    "knowledge": fresh(snapshot.knowledge_graph),
+                    **({"domain": fresh(snapshot.domain_graph)}
+                       if snapshot.domain_graph is not None else {}),
+                },
+                "coordinateSource": "cointent",
+            }
+        raise KeyError(f"unknown UA viewer artifact {kind!r}")
+
+    def store_snapshot_sources(self, snapshot: RepositorySnapshot, checkout: Path) -> int:
+        """Persist exact content-addressed source while a captured coordinate is available."""
+        directory = self._project_dir(snapshot.project_id) / "source-blobs"
+        directory.mkdir(parents=True, exist_ok=True)
+        stored = 0
+        for artifact in snapshot.artifacts:
+            target = directory / artifact.sha256
+            if target.is_file():
+                continue
+            if snapshot.dirty:
+                source = checkout / artifact.path
+                if not source.is_file():
+                    continue
+                payload = source.read_bytes()
+            else:
+                result = subprocess.run(
+                    ["git", "show", f"{snapshot.revision}:{artifact.path}"],
+                    cwd=checkout, capture_output=True, check=False,
+                )
+                if result.returncode:
+                    continue
+                payload = result.stdout
+            if hashlib.sha256(payload).hexdigest() != artifact.sha256:
+                continue
+            temporary = target.with_suffix(".tmp")
+            temporary.write_bytes(payload)
+            temporary.replace(target)
+            stored += 1
+        return stored
+
+    def read_snapshot_source(self, session: dict[str, Any], requested_path: str) -> dict[str, Any]:
+        path = safe_source_path(requested_path)
+        snapshot = RepositorySnapshot.model_validate(
+            self.get_snapshot(session["code_snapshot_id"])["snapshot"]
+        )
+        ua = UnderstandAnythingSnapshot.model_validate(
+            self.get_understand_anything_snapshot(session["ua_snapshot_id"])
+        )
+        allowed_ua_paths = {
+            node.file_path for node in ua.knowledge_graph.nodes if node.file_path is not None
+        }
+        if path not in allowed_ua_paths:
+            raise KeyError("file is not present in the pinned UA graph")
+        artifact = next((item for item in snapshot.artifacts if item.path == path), None)
+        if artifact is None:
+            raise KeyError("file is not present in the pinned code snapshot")
+        if artifact.size > MAX_SOURCE_BYTES:
+            raise ValueError("source file is too large to preview")
+        blob = self._project_dir(snapshot.project_id) / "source-blobs" / artifact.sha256
+        if not blob.is_file():
+            raise KeyError("exact source is unavailable for this snapshot")
+        payload = blob.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != artifact.sha256:
+            raise ValueError("stored source digest does not match the code snapshot")
+        if b"\x00" in payload:
+            raise ValueError("binary files cannot be previewed")
+        content = payload.decode("utf-8")
+        source = SourceContent(
+            path=path, language=source_language(path), content=content,
+            size_bytes=len(payload), line_count=len(content.splitlines()),
+            source_digest=artifact.sha256,
+        )
+        return {
+            "path": source.path, "language": source.language, "content": source.content,
+            "sizeBytes": source.size_bytes, "lineCount": source.line_count,
+            "sourceDigest": source.source_digest,
+        }
+
+    def implementation_refs_for_subject(
+        self, observed_revision_id: str, subject_id: str,
+    ) -> list[dict[str, Any]]:
+        revision = ObservedModelRevision.model_validate(self.get_observed_revision(observed_revision_id))
+        return [item.model_dump(mode="json") for item in revision.implementation_refs if item.subject_id == subject_id]
+
+    def semantic_subjects_for_ua_node(
+        self, ua_snapshot_id: str, structural_ua_node_id: str,
+    ) -> dict[str, Any]:
+        snapshot = self.get_understand_anything_snapshot(ua_snapshot_id)
+        graph_ids = {item["id"] for item in snapshot["knowledge_graph"]["nodes"]}
+        if structural_ua_node_id not in graph_ids:
+            raise KeyError("UA node does not exist in the pinned snapshot")
+        with self.connection() as db:
+            rows = db.execute(
+                """SELECT revision_json FROM observed_model_revisions
+                   WHERE ua_snapshot_id=? ORDER BY created_at DESC""", (ua_snapshot_id,),
+            ).fetchall()
+        related: list[dict[str, Any]] = []
+        for row in rows:
+            revision = ObservedModelRevision.model_validate_json(row["revision_json"])
+            responsibilities = {item.id: item for item in revision.responsibilities}
+            capabilities = {item.id: item for item in revision.capabilities}
+            for ref in revision.implementation_refs:
+                if structural_ua_node_id not in ref.structural_ua_node_ids:
+                    continue
+                subject = responsibilities.get(ref.subject_id) or capabilities.get(ref.subject_id)
+                related.append({
+                    "observed_revision_id": revision.id,
+                    "subject_kind": ref.subject_kind,
+                    "subject_id": ref.subject_id,
+                    "name": subject.name if subject is not None else ref.subject_id,
+                    "implementation_ref_id": ref.id,
+                })
+        unique = {(item["observed_revision_id"], item["subject_kind"], item["subject_id"]): item for item in related}
+        return {
+            "ua_snapshot_id": ua_snapshot_id,
+            "structural_ua_node_id": structural_ua_node_id,
+            "subjects": [unique[key] for key in sorted(unique)],
+        }
+
     def request_observation_expansion(
         self, project_id: str, observed_revision_id: str, node_id: str, depth: int = 1,
     ) -> dict[str, Any]:
@@ -999,8 +1532,8 @@ class CoIntentRepository:
         rationale: str = "Create a target design from the current observed baseline.",
     ) -> dict[str, Any]:
         self.get_project(project_id)
-        if actor not in {"human", "agent"}:
-            raise ValueError("design actor must be human or agent")
+        if not actor.strip():
+            raise ValueError("design actor is required")
         if not title.strip():
             raise ValueError("design workspace title is required")
         if not rationale.strip():
@@ -1010,6 +1543,12 @@ class CoIntentRepository:
         )
         if observed.project_id != project_id:
             raise ValueError("observed baseline does not belong to project")
+        current = self.observation_coordinate(project_id)
+        current_revision = current.get("observed_revision")
+        if observed.parent_revision_id is not None:
+            raise ValueError("design must start from a root Observation, not a refinement")
+        if current_revision is None or current_revision["id"] != observed.id or current["status"] != "current":
+            raise ValueError("design must start from the latest valid root Observation; update understanding first")
         workspace_id = _id("design-workspace")
         created = _now()
         revision = seed_design_from_observation(
@@ -1127,8 +1666,8 @@ class CoIntentRepository:
             raise ValueError("only draft design workspaces can be changed")
         if workspace.current_design_revision_id != base_design_revision_id:
             raise ValueError("design revision is stale; reload the workspace before applying operations")
-        if actor not in {"human", "agent"}:
-            raise ValueError("design actor must be human or agent")
+        if not actor.strip():
+            raise ValueError("design actor is required")
         parsed = [DesignOperation.model_validate(item) for item in operations]
         base = DesignRevision.model_validate(self.get_design_revision_v04(base_design_revision_id))
         created = _now()
@@ -1369,6 +1908,87 @@ class CoIntentRepository:
             self._write_implementation_bundle_asset(workspace.project_id, bundle)
         return bundle.model_dump(mode="json")
 
+    def create_implementation_context(
+        self, workspace_id: str, design_revision_id: str, expected_diff_digest: str, *, actor: str,
+    ) -> dict[str, Any]:
+        """Freeze the exact reviewed drawing after an explicit user confirmation.
+
+        ``expected_diff_digest`` is the confirmation token.  It prevents a
+        conversational instruction from finalizing a revision that changed
+        after the user reviewed it, and records the actual initiating principal
+        rather than inventing a human actor.
+        """
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(workspace_id))
+        if workspace.current_design_revision_id != design_revision_id:
+            raise ValueError("design revision changed after review; read and confirm the new diff")
+        existing = self.latest_implementation_export_v04(workspace_id)
+        if existing is not None and existing["design_revision_id"] == design_revision_id:
+            diff = self.diff_structure_design(workspace_id, to_revision_id=design_revision_id)
+            if diff["diff_digest"] != expected_diff_digest:
+                raise ValueError("expected diff digest does not match the frozen design")
+            return {"diff": diff, "implementation_context": existing, "initiated_by": actor}
+        if workspace.status != "draft":
+            raise ValueError("only the current draft drawing can create an implementation context")
+        design = DesignRevision.model_validate(self.get_design_revision_v04(design_revision_id))
+        if design.unresolved_questions:
+            raise ValueError("resolve target-design questions before creating implementation context")
+        if not design.acceptance_criteria:
+            raise ValueError("target design requires testable acceptance criteria before implementation")
+        if not design.expected_features or not design.responsibilities:
+            raise ValueError("target design requires expected functions and a complete structure graph")
+        mapped_features = {item.expected_feature_id for item in design.feature_responsibility_links}
+        missing_features = [item.id for item in design.expected_features if item.id not in mapped_features]
+        if missing_features:
+            raise ValueError(f"every expected function must map to the target structure: {missing_features!r}")
+        adjacency: dict[str, set[str]] = {item.id: set() for item in design.responsibilities}
+        for responsibility in design.responsibilities:
+            for occurrence in responsibility.workflow.nodes if responsibility.workflow else []:
+                adjacency[responsibility.id].add(occurrence.responsibility_id)
+                adjacency[occurrence.responsibility_id].add(responsibility.id)
+        reachable = {item.responsibility_id for item in design.feature_responsibility_links}
+        frontier = list(reachable)
+        while frontier:
+            current = frontier.pop()
+            for related in adjacency[current] - reachable:
+                reachable.add(related)
+                frontier.append(related)
+        orphaned = sorted(set(adjacency) - reachable)
+        if orphaned:
+            raise ValueError(f"target structure contains orphan Responsibilities: {orphaned!r}")
+        diff = self.diff_structure_design(workspace_id, to_revision_id=design_revision_id)
+        if diff["diff_digest"] != expected_diff_digest:
+            raise ValueError("expected diff digest does not match the reviewed design")
+        review_data = self.submit_design_review_v04(
+            workspace_id, design.acceptance_criteria, actor=actor,
+        )
+        review = DesignReview.model_validate(review_data)
+        approved_at = _now()
+        approval = build_approval(review, actor=actor, approved_at=approved_at)
+        approved_review = review.model_copy(update={"status": "approved"})
+        current_workspace = DesignWorkspace.model_validate(self.get_design_workspace(workspace_id))
+        approved_workspace = current_workspace.model_copy(update={"status": "approved", "updated_at": approved_at})
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO design_approvals_v04(
+                   id,review_id,workspace_id,approval_json,content_digest,approved_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (approval.id, approval.review_id, approval.workspace_id, approval.model_dump_json(),
+                 approval.content_digest, approval.approved_at),
+            )
+            db.execute(
+                "UPDATE design_reviews_v04 SET review_json=?,status=? WHERE id=?",
+                (approved_review.model_dump_json(), approved_review.status, approved_review.id),
+            )
+            db.execute(
+                """UPDATE design_workspaces_v04 SET status=?,workspace_json=?,updated_at=? WHERE id=?""",
+                (approved_workspace.status, approved_workspace.model_dump_json(), approved_at, workspace_id),
+            )
+        self._write_target_workspace_asset(approved_workspace)
+        self._write_design_review_asset(workspace.project_id, approved_review)
+        self._write_design_approval_asset(workspace.project_id, approval)
+        bundle = self.create_implementation_export_v04(workspace_id)
+        return {"diff": diff, "implementation_context": bundle, "initiated_by": actor}
+
     def latest_implementation_export_v04(self, workspace_id: str) -> dict[str, Any] | None:
         with self.connection() as db:
             row = db.execute(
@@ -1437,6 +2057,38 @@ class CoIntentRepository:
             self._write_target_workspace_asset(updated_workspace)
             self._write_verification_report_asset(workspace.project_id, report)
         return report.model_dump(mode="json")
+
+    def compare_design_to_observation(
+        self, design_revision_id: str, observed_revision_id: str,
+    ) -> dict[str, Any]:
+        """Compare immutable coordinates without creating lifecycle state.
+
+        The public on-demand product treats later comparison as optional
+        information, not a verification/convergence workflow.  The older
+        persisted report path remains available only to compatibility routes.
+        """
+        design = DesignRevision.model_validate(self.get_design_revision_v04(design_revision_id))
+        workspace = DesignWorkspace.model_validate(self.get_design_workspace(design.workspace_id))
+        observed = ObservedModelRevision.model_validate(self.get_observed_revision(observed_revision_id))
+        if observed.project_id != workspace.project_id:
+            raise ValueError("comparison Observation does not belong to the target project")
+        if observed.parent_revision_id is not None:
+            raise ValueError("comparison requires a full root Observation")
+        bundle_data = self.latest_implementation_export_v04(workspace.id)
+        if bundle_data is None or bundle_data["design_revision_id"] != design.id:
+            raise ValueError("comparison requires an implementation context for this exact design revision")
+        bundle = ImplementationChangeBundle.model_validate(bundle_data)
+        baseline = ObservedModelRevision.model_validate(
+            self.get_observed_revision(design.base_observed_revision_id)
+        )
+        report = build_verification_report(
+            bundle=bundle, design=design, baseline=baseline, observed=observed, created_at=_now(),
+        )
+        return {
+            "kind": "informational_design_comparison",
+            "mutates_workspace": False,
+            **report.model_dump(mode="json"),
+        }
 
     def get_verification_report_v04(self, report_id: str) -> dict[str, Any]:
         with self.connection() as db:
@@ -1863,6 +2515,66 @@ class CoIntentRepository:
             / "verification-decisions" / f"{decision.id}.json",
             decision.model_dump(mode="json"),
         )
+
+
+def _responsibility_summary(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "name": item.name,
+        "description": item.description,
+        "data_members": list(item.data_members),
+        "inputs": list(item.inputs),
+        "outputs": list(item.outputs),
+        "status": item.status,
+        "has_children": item.workflow is not None and bool(item.workflow.nodes),
+    }
+
+
+def _bounded_coordinate(coordinate: dict[str, Any]) -> dict[str, Any]:
+    revision = coordinate["observed_revision"]
+    return {
+        "project_id": coordinate["project_id"],
+        "status": coordinate["status"],
+        "code_snapshot": coordinate.get("code_snapshot"),
+        "ua_snapshot": coordinate.get("ua_snapshot"),
+        "observed_revision": {
+            "id": revision["id"],
+            "parent_revision_id": revision["parent_revision_id"],
+            "refinement_of_node_id": revision["refinement_of_node_id"],
+            "content_digest": revision["content_digest"],
+            "created_at": revision["created_at"],
+        },
+    }
+
+
+def _target_revision_changes(before: DesignRevision, after: DesignRevision) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for kind, left_items, right_items in (
+        ("expected_function", before.expected_features, after.expected_features),
+        ("responsibility", before.responsibilities, after.responsibilities),
+        ("expected_function_mapping", before.feature_responsibility_links, after.feature_responsibility_links),
+    ):
+        left = {item.id: item.model_dump(mode="json") for item in left_items}
+        right = {item.id: item.model_dump(mode="json") for item in right_items}
+        for identifier in sorted(left.keys() | right.keys()):
+            if identifier not in left:
+                change_type = "added"
+            elif identifier not in right:
+                change_type = "removed"
+            elif left[identifier] != right[identifier]:
+                change_type = "changed"
+            else:
+                continue
+            changes.append({
+                "kind": kind, "change_type": change_type, "id": identifier,
+                "before": left.get(identifier), "after": right.get(identifier),
+            })
+    if before.summary != after.summary:
+        changes.append({
+            "kind": "intent", "change_type": "changed", "id": "intent",
+            "before": before.summary, "after": after.summary,
+        })
+    return changes
 
 
 def _proposal(row: sqlite3.Row) -> dict[str, Any]:

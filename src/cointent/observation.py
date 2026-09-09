@@ -184,6 +184,30 @@ class ClaimBinding(BaseModel):
     explanation: str
 
 
+class ImplementationRef(BaseModel):
+    """Immutable semantic-to-UA/source coordinate used by the browser bridge."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    project_id: str
+    observed_revision_id: str
+    subject_kind: Literal["system_function", "responsibility"]
+    subject_id: str
+    ua_snapshot_id: str
+    code_snapshot_id: str
+    graph_kind: Literal["structural"] = "structural"
+    semantic_ua_node_id: str | None = None
+    structural_ua_node_ids: list[str] = Field(default_factory=list)
+    preferred_focus_node_id: str | None = None
+    file_path: str
+    line_range: tuple[int, int] | None = None
+    symbol: str | None = None
+    role: Literal["primary", "supporting"] = "supporting"
+    resolution: Literal[
+        "exact_symbol", "exact_span", "enclosing_symbol", "file_fallback", "inherited",
+    ]
+
+
 class ObservedCapability(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -215,6 +239,7 @@ class ObservedModelRevision(BaseModel):
     capabilities: list[ObservedCapability] = Field(default_factory=list)
     responsibilities: list[Responsibility] = Field(default_factory=list)
     bindings: list[ClaimBinding] = Field(default_factory=list)
+    implementation_refs: list[ImplementationRef] = Field(default_factory=list)
     diagnostics: list[UADiagnostic] = Field(default_factory=list)
     refinement: ObservationRefinement | None = None
     content_digest: str
@@ -244,6 +269,30 @@ class ObservedModelRevision(BaseModel):
         valid_subjects = responsibility_ids | workflow_edge_ids | {item.id for item in self.capabilities}
         if any(item.subject_id not in valid_subjects or not item.evidence for item in self.bindings):
             raise ValueError("claim binding has an unknown subject or no source evidence")
+        capability_ids = {item.id for item in self.capabilities}
+        ref_ids = [item.id for item in self.implementation_refs]
+        if len(ref_ids) != len(set(ref_ids)):
+            raise ValueError("observed model contains duplicate ImplementationRef IDs")
+        primary_by_subject: dict[str, int] = {}
+        for ref in self.implementation_refs:
+            if (
+                ref.project_id != self.project_id
+                or ref.observed_revision_id != self.id
+                or ref.ua_snapshot_id != self.ua_snapshot_id
+                or ref.code_snapshot_id != self.code_snapshot_id
+            ):
+                raise ValueError("ImplementationRef coordinate does not match its observed revision")
+            expected_subjects = capability_ids if ref.subject_kind == "system_function" else responsibility_ids
+            if ref.subject_id not in expected_subjects:
+                raise ValueError("ImplementationRef points to an unknown semantic subject")
+            if not ref.structural_ua_node_ids:
+                raise ValueError("ImplementationRef requires at least one structural UA node")
+            if ref.preferred_focus_node_id not in ref.structural_ua_node_ids:
+                raise ValueError("ImplementationRef focus must be one of its structural UA nodes")
+            if ref.role == "primary":
+                primary_by_subject[ref.subject_id] = primary_by_subject.get(ref.subject_id, 0) + 1
+        if any(count > 1 for count in primary_by_subject.values()):
+            raise ValueError("a semantic subject cannot have multiple primary ImplementationRefs")
         return self
 
 
@@ -430,13 +479,23 @@ def project_observed_expansion(
         "parent_revision_id": base_revision.id,
         "refinement_of_node_id": node_id,
         "projector_version": "ua-domain-v1",
+        "implementation_ref_projection_version": "implementation-ref-v1",
         "responsibilities": [item.model_dump(mode="json") for item in responsibilities],
         "bindings": [item.model_dump(mode="json") for item in bindings],
         "refinement": refinement.model_dump(mode="json"),
     }
     digest = _digest(payload)
+    observed_revision_id = f"observed-{digest[:24]}"
+    implementation_refs = _implementation_refs(
+        project_id=snapshot.project_id,
+        observed_revision_id=observed_revision_id,
+        ua_snapshot_id=snapshot.id,
+        code_snapshot_id=snapshot.code_snapshot_id,
+        bindings=bindings,
+        structural_graph=snapshot.knowledge_graph,
+    )
     return ObservedModelRevision(
-        id=f"observed-{digest[:24]}",
+        id=observed_revision_id,
         project_id=snapshot.project_id,
         code_snapshot_id=snapshot.code_snapshot_id,
         ua_snapshot_id=snapshot.id,
@@ -444,6 +503,7 @@ def project_observed_expansion(
         refinement_of_node_id=node_id,
         responsibilities=responsibilities,
         bindings=sorted(bindings, key=lambda item: item.id),
+        implementation_refs=implementation_refs,
         refinement=refinement,
         content_digest=digest,
         created_at=created_at or datetime.now(UTC).isoformat(),
@@ -689,19 +749,119 @@ def project_observed_model(
     payload = {
         "project_id": snapshot.project_id, "code_snapshot_id": snapshot.code_snapshot_id,
         "ua_snapshot_id": snapshot.id, "projector_version": "ua-domain-v1",
+        "implementation_ref_projection_version": "implementation-ref-v1",
         "capabilities": [item.model_dump(mode="json") for item in capabilities],
         "responsibilities": [item.model_dump(mode="json") for item in responsibilities],
         "bindings": [item.model_dump(mode="json") for item in bindings],
         "diagnostics": [item.model_dump(mode="json") for item in diagnostics],
     }
     digest = _digest(payload)
+    observed_revision_id = f"observed-{digest[:24]}"
+    implementation_refs = _implementation_refs(
+        project_id=snapshot.project_id,
+        observed_revision_id=observed_revision_id,
+        ua_snapshot_id=snapshot.id,
+        code_snapshot_id=snapshot.code_snapshot_id,
+        bindings=bindings,
+        structural_graph=snapshot.knowledge_graph,
+    )
     return ObservedModelRevision(
-        id=f"observed-{digest[:24]}", project_id=snapshot.project_id,
+        id=observed_revision_id, project_id=snapshot.project_id,
         code_snapshot_id=snapshot.code_snapshot_id, ua_snapshot_id=snapshot.id,
         capabilities=capabilities, responsibilities=responsibilities,
-        bindings=sorted(bindings, key=lambda item: item.id), diagnostics=diagnostics,
+        bindings=sorted(bindings, key=lambda item: item.id),
+        implementation_refs=implementation_refs, diagnostics=diagnostics,
         content_digest=digest, created_at=created_at or datetime.now(UTC).isoformat(),
     )
+
+
+def _implementation_refs(
+    *, project_id: str, observed_revision_id: str, ua_snapshot_id: str,
+    code_snapshot_id: str, bindings: list[ClaimBinding], structural_graph: UAKnowledgeGraph,
+) -> list[ImplementationRef]:
+    """Derive deterministic refs without inventing identities from display names."""
+
+    structural = {node.id: node for node in structural_graph.nodes}
+    refs: list[ImplementationRef] = []
+    for binding in bindings:
+        if binding.subject_kind not in {"responsibility", "capability"}:
+            continue
+        candidates: list[tuple[int, EvidenceBinding, str | None, UANode | None, str]] = []
+        for evidence in binding.evidence:
+            focus_id, focus_node, rank, resolution = _preferred_structural_node(evidence, structural)
+            if binding.support != "direct":
+                resolution = "inherited"
+            candidates.append((rank, evidence, focus_id, focus_node, resolution))
+        best_rank = min((item[0] for item in candidates), default=99)
+        best_count = sum(1 for item in candidates if item[0] == best_rank)
+        for rank, evidence, focus_id, focus_node, resolution in candidates:
+            subject_kind = "system_function" if binding.subject_kind == "capability" else "responsibility"
+            identity = _digest({
+                "observed_revision_id": observed_revision_id,
+                "subject_kind": subject_kind,
+                "subject_id": binding.subject_id,
+                "semantic_ua_node_id": evidence.ua_node_id if evidence.origin == "ua_semantic" else None,
+                "structural_ua_node_ids": evidence.structural_ua_node_ids,
+                "path": evidence.path,
+                "line_range": [evidence.start_line, evidence.end_line],
+            })
+            line_range = (
+                (evidence.start_line, evidence.end_line)
+                if evidence.start_line is not None and evidence.end_line is not None else None
+            )
+            refs.append(ImplementationRef(
+                id=f"implementation-ref-{identity[:24]}",
+                project_id=project_id,
+                observed_revision_id=observed_revision_id,
+                subject_kind=subject_kind,
+                subject_id=binding.subject_id,
+                ua_snapshot_id=ua_snapshot_id,
+                code_snapshot_id=code_snapshot_id,
+                semantic_ua_node_id=evidence.ua_node_id if evidence.origin == "ua_semantic" else None,
+                structural_ua_node_ids=sorted(set(evidence.structural_ua_node_ids)),
+                preferred_focus_node_id=focus_id,
+                file_path=evidence.path,
+                line_range=line_range,
+                symbol=focus_node.name if focus_node is not None and focus_node.type != "file" else None,
+                role="primary" if rank == best_rank and best_count == 1 else "supporting",
+                resolution=resolution,
+            ))
+    return sorted(refs, key=lambda item: (item.subject_kind, item.subject_id, item.role != "primary", item.id))
+
+
+def _preferred_structural_node(
+    evidence: EvidenceBinding, structural: dict[str, UANode],
+) -> tuple[str | None, UANode | None, int, str]:
+    nodes = [structural[item] for item in evidence.structural_ua_node_ids if item in structural]
+    if not nodes:
+        return None, None, 9, "inherited"
+    exact_types = {"function", "endpoint", "service", "class", "component"}
+    located = [node for node in nodes if node.file_path == evidence.path]
+    exact = [
+        node for node in located
+        if node.type in exact_types and node.line_range is not None
+        and evidence.start_line is not None and evidence.end_line is not None
+        and node.line_range[0] <= evidence.start_line <= evidence.end_line <= node.line_range[1]
+    ]
+    if exact:
+        node = min(exact, key=lambda item: (item.line_range[1] - item.line_range[0], item.id))  # type: ignore[index]
+        resolution = "exact_span" if node.line_range == (evidence.start_line, evidence.end_line) else "exact_symbol"
+        return node.id, node, 1, resolution
+    enclosing = [node for node in located if node.type in {"class", "module", "service", "component"}]
+    if enclosing:
+        node = min(
+            enclosing,
+            key=lambda item: (
+                (item.line_range[1] - item.line_range[0]) if item.line_range is not None else 10**9,
+                item.id,
+            ),
+        )
+        return node.id, node, 2, "enclosing_symbol"
+    files = [node for node in located if node.type == "file"]
+    if files:
+        node = min(files, key=lambda item: item.id)
+        return node.id, node, 3, "file_fallback"
+    return None, None, 9, "inherited"
 
 
 def _evidence_backed_ids(

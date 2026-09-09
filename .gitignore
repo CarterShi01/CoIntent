@@ -8,6 +8,9 @@ dist/
 build/
 *.egg-info/
 node_modules/
+web/ua-viewer-dist/
+web/ua-viewer-dist.next/
+web/ua-viewer-dist.previous/
 web/dist/
 web-dist/
 vendor/*.whl
