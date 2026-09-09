@@ -1,4 +1,4 @@
-"""Versioned product-function, responsibility, and implementation model."""
+"""CoIntent 0.3 recursive Responsibility and Workflow model."""
 
 from __future__ import annotations
 
@@ -11,243 +11,252 @@ class ModelRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ProductFunction(ModelRecord):
+class SpecificationItem(ModelRecord):
+    """Plain-language, implementation-independent product meaning."""
+
     id: str
     name: str
     description: str = ""
     parent_id: str | None = None
     status: Literal["draft", "accepted", "questioned", "deferred"] = "accepted"
-    priority: Literal["critical", "high", "medium", "low", "unset"] = "unset"
-    acceptance: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
 
 
-class RoleObject(ModelRecord):
+class WorkflowNode(ModelRecord):
+    """One occurrence of a Responsibility inside a Workflow."""
+
     id: str
-    name: str
-    purpose: str
-    parent_id: str | None = None
-    status: Literal["draft", "accepted", "questioned"] = "accepted"
-    owns_knowledge: list[str] = Field(default_factory=list)
-    inputs: list[str] = Field(default_factory=list)
-    outputs: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    source_ids: list[str] = Field(default_factory=list)
+    responsibility_id: str
+    note: str = ""
 
 
-class Responsibility(ModelRecord):
+class WorkflowEdge(ModelRecord):
     id: str
-    role_id: str
-    statement: str
-    function_ids: list[str] = Field(default_factory=list)
-    inputs: list[str] = Field(default_factory=list)
-    outputs: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    source_ids: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_goal_ids(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "goal_ids" in data and "function_ids" not in data:
-            data = dict(data)
-            data["function_ids"] = data.pop("goal_ids")
-        return data
-
-
-class RoleRelation(ModelRecord):
-    id: str
-    source_role_id: str
-    target_role_id: str
-    kind: Literal["collaborates", "depends_on", "delegates_to", "exchanges_with", "governs"]
+    source_node_id: str
+    target_node_id: str
+    kind: Literal["next", "condition", "parallel", "event", "error"] = "next"
     label: str = ""
 
 
-class FunctionRoleLink(ModelRecord):
+class Workflow(ModelRecord):
+    entry_node_ids: list[str] = Field(default_factory=list)
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    edges: list[WorkflowEdge] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_local_graph(self) -> "Workflow":
+        node_ids = _unique(self.nodes, "workflow node")
+        _unique(self.edges, "workflow edge")
+        unknown_entries = set(self.entry_node_ids) - node_ids
+        if unknown_entries:
+            raise ValueError(f"workflow has unknown entry nodes {sorted(unknown_entries)!r}")
+        for edge in self.edges:
+            if edge.source_node_id not in node_ids or edge.target_node_id not in node_ids:
+                raise ValueError(f"workflow edge {edge.id!r} has an unknown node endpoint")
+        if self.nodes and not self.entry_node_ids:
+            raise ValueError("non-empty workflow requires at least one entry node")
+        return self
+
+
+class Responsibility(ModelRecord):
+    """A semantic object that owns one coherent program responsibility."""
+
     id: str
-    function_id: str
-    role_id: str
-    kind: Literal["owns", "contributes", "governs"]
+    name: str
+    description: str = ""
+    data_members: list[str] = Field(default_factory=list)
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
+    workflow: Workflow | None = None
+    status: Literal["draft", "accepted", "questioned"] = "accepted"
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class SpecificationResponsibilityLink(ModelRecord):
+    id: str
+    specification_id: str
+    responsibility_id: str
+    kind: Literal["realizes", "contributes"] = "realizes"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence: str = ""
     source_ids: list[str] = Field(default_factory=list)
 
 
-class TraceLink(ModelRecord):
+class ImplementationLink(ModelRecord):
     id: str
-    role_id: str
+    responsibility_id: str
     artifact_path: str
-    kind: Literal["realizes", "supports", "verifies", "stores", "presents"] = "realizes"
+    symbol: str = ""
+    kind: Literal["realizes", "supports", "verifies", "stores"] = "realizes"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     origin: Literal["human", "agent", "scanner", "runtime"] = "agent"
     evidence: str = ""
 
 
-class Goal(ModelRecord):
-    """Legacy 0.1 input type retained for Python import compatibility."""
-
-    id: str
-    title: str
-    description: str = ""
-    parent_id: str | None = None
-    status: Literal["open", "accepted", "deferred"] = "accepted"
-    source_ids: list[str] = Field(default_factory=list)
-
-
-class RoleRecord(ModelRecord):
-    """Legacy 0.1 input type retained for Python import compatibility."""
-
-    id: str
-    name: str
-    purpose: str
-    parent_id: str | None = None
-    status: Literal["draft", "accepted", "questioned"] = "accepted"
-    source_ids: list[str] = Field(default_factory=list)
-
-
-class Relation(ModelRecord):
-    """Legacy 0.1 input type retained for Python import compatibility."""
-
-    id: str
-    source_role_id: str
-    target_role_id: str
-    kind: Literal["collaborates", "depends_on", "delegates_to", "exchanges_with"]
-    label: str = ""
-
-
 class ProjectModel(ModelRecord):
-    schema_version: Literal["0.2"] = "0.2"
+    schema_version: Literal["0.3"] = "0.3"
     project_id: str
     name: str
     summary: str = ""
     status: Literal["draft", "baseline"] = "draft"
-    product_functions: list[ProductFunction] = Field(default_factory=list)
-    role_objects: list[RoleObject] = Field(default_factory=list)
+    specification_items: list[SpecificationItem] = Field(default_factory=list)
     responsibilities: list[Responsibility] = Field(default_factory=list)
-    role_relations: list[RoleRelation] = Field(default_factory=list)
-    function_role_links: list[FunctionRoleLink] = Field(default_factory=list)
-    trace_links: list[TraceLink] = Field(default_factory=list)
+    specification_responsibility_links: list[SpecificationResponsibilityLink] = Field(default_factory=list)
+    implementation_links: list[ImplementationLink] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_legacy_model(cls, data: Any) -> Any:
+    def migrate_v02(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+        if data.get("schema_version") == "0.3" and "role_objects" not in data:
+            return data
+
         migrated = dict(data)
-        legacy = any(key in migrated for key in ("goals", "roles", "relations"))
-        if "product_functions" not in migrated and "goals" in migrated:
-            migrated["product_functions"] = [
+        old_functions = [_record_dict(item) for item in migrated.get("product_functions", migrated.get("goals", []))]
+        old_roles = [_record_dict(item) for item in migrated.get("role_objects", migrated.get("roles", []))]
+        old_responsibilities = [_record_dict(item) for item in migrated.get("responsibilities", [])]
+        old_function_links = [_record_dict(item) for item in migrated.get("function_role_links", [])]
+        old_trace_links = [_record_dict(item) for item in migrated.get("trace_links", [])]
+
+        if old_functions and "specification_items" not in migrated:
+            migrated["specification_items"] = [
                 {
-                    "id": record["id"], "name": record.get("title", record["id"]),
-                    "description": record.get("description", ""), "parent_id": record.get("parent_id"),
-                    "status": "questioned" if record.get("status") == "open" else record.get("status", "accepted"),
-                    "source_ids": record.get("source_ids", []),
+                    "id": item["id"],
+                    "name": item.get("name", item.get("title", item["id"])),
+                    "description": item.get("description", ""),
+                    "parent_id": item.get("parent_id"),
+                    "status": "questioned" if item.get("status") == "open" else item.get("status", "accepted"),
+                    "source_ids": item.get("source_ids", []),
                 }
-                for item in migrated.pop("goals")
-                for record in [_record_dict(item)]
+                for item in old_functions
             ]
-        if "role_objects" not in migrated and "roles" in migrated:
-            migrated["role_objects"] = [_record_dict(item) for item in migrated.pop("roles")]
-        if "role_relations" not in migrated and "relations" in migrated:
-            migrated["role_relations"] = [_record_dict(item) for item in migrated.pop("relations")]
-        if legacy:
-            migrated["schema_version"] = "0.2"
+
+        if old_roles:
+            statements: dict[str, list[str]] = {}
+            for item in old_responsibilities:
+                statements.setdefault(item.get("role_id", ""), []).append(item.get("statement", ""))
+            children: dict[str, list[dict[str, Any]]] = {}
+            for role in old_roles:
+                if role.get("parent_id"):
+                    children.setdefault(role["parent_id"], []).append(role)
+            converted: list[dict[str, Any]] = []
+            for role in old_roles:
+                child_roles = children.get(role["id"], [])
+                nodes = [
+                    {"id": f"node.{role['id']}.{child['id']}", "responsibility_id": child["id"]}
+                    for child in child_roles
+                ]
+                edges = [
+                    {
+                        "id": f"edge.{role['id']}.{index}",
+                        "source_node_id": nodes[index]["id"],
+                        "target_node_id": nodes[index + 1]["id"],
+                        "kind": "next",
+                    }
+                    for index in range(max(0, len(nodes) - 1))
+                ]
+                detail = " ".join(value for value in statements.get(role["id"], []) if value)
+                converted.append({
+                    "id": role["id"],
+                    "name": role.get("name", role["id"]),
+                    "description": detail or role.get("purpose", ""),
+                    "data_members": role.get("owns_knowledge", []),
+                    "inputs": role.get("inputs", []),
+                    "outputs": role.get("outputs", []),
+                    "workflow": None if not nodes else {
+                        "entry_node_ids": [nodes[0]["id"]], "nodes": nodes, "edges": edges,
+                    },
+                    "status": role.get("status", "accepted"),
+                    "source_ids": role.get("source_ids", []),
+                })
+            migrated["responsibilities"] = converted
+
+        if old_function_links and "specification_responsibility_links" not in migrated:
+            migrated["specification_responsibility_links"] = [
+                {
+                    "id": item["id"],
+                    "specification_id": item.get("function_id"),
+                    "responsibility_id": item.get("role_id"),
+                    "kind": "contributes" if item.get("kind") == "contributes" else "realizes",
+                    "confidence": item.get("confidence", 1.0),
+                    "evidence": item.get("evidence", ""),
+                    "source_ids": item.get("source_ids", []),
+                }
+                for item in old_function_links
+            ]
+
+        if old_trace_links and "implementation_links" not in migrated:
+            migrated["implementation_links"] = [
+                {
+                    "id": item["id"],
+                    "responsibility_id": item.get("role_id"),
+                    "artifact_path": item.get("artifact_path", ""),
+                    "kind": item.get("kind") if item.get("kind") in {"realizes", "supports", "verifies", "stores"} else "supports",
+                    "confidence": item.get("confidence", 1.0),
+                    "origin": item.get("origin", "agent"),
+                    "evidence": item.get("evidence", ""),
+                }
+                for item in old_trace_links
+            ]
+
+        for key in (
+            "product_functions", "goals", "role_objects", "roles", "role_relations", "relations",
+            "function_role_links", "trace_links",
+        ):
+            migrated.pop(key, None)
+        migrated["schema_version"] = "0.3"
+        migrated.setdefault("specification_items", [])
+        migrated.setdefault("responsibilities", [])
+        migrated.setdefault("specification_responsibility_links", [])
+        migrated.setdefault("implementation_links", [])
         return migrated
 
     @model_validator(mode="after")
-    def validate_graph(self) -> "ProjectModel":
-        functions = _unique(self.product_functions, "product function")
-        roles = _unique(self.role_objects, "role object")
-        _unique(self.responsibilities, "responsibility")
-        _unique(self.role_relations, "role relation")
-        _unique(self.function_role_links, "function-role link")
-        _unique(self.trace_links, "trace link")
-        for item in self.product_functions:
-            if item.parent_id is not None and item.parent_id not in functions:
-                raise ValueError(f"product function {item.id!r} has unknown parent {item.parent_id!r}")
-        _assert_acyclic(self.product_functions, "product function")
-        for item in self.role_objects:
-            if item.parent_id is not None and item.parent_id not in roles:
-                raise ValueError(f"role object {item.id!r} has unknown parent {item.parent_id!r}")
-        _assert_acyclic(self.role_objects, "role object")
-        for item in self.responsibilities:
-            if item.role_id not in roles:
-                raise ValueError(f"responsibility {item.id!r} has unknown role {item.role_id!r}")
-            unknown = set(item.function_ids) - functions
-            if unknown:
-                raise ValueError(f"responsibility {item.id!r} has unknown product functions {sorted(unknown)!r}")
-        for item in self.role_relations:
-            if item.source_role_id not in roles or item.target_role_id not in roles:
-                raise ValueError(f"role relation {item.id!r} has an unknown role endpoint")
-        for item in self.function_role_links:
-            if item.function_id not in functions or item.role_id not in roles:
-                raise ValueError(f"function-role link {item.id!r} has an unknown endpoint")
-        for item in self.trace_links:
-            if item.role_id not in roles:
-                raise ValueError(f"trace link {item.id!r} has unknown role {item.role_id!r}")
+    def validate_model(self) -> "ProjectModel":
+        specifications = _unique(self.specification_items, "specification item")
+        responsibilities = _unique(self.responsibilities, "responsibility")
+        _unique(self.specification_responsibility_links, "specification-responsibility link")
+        _unique(self.implementation_links, "implementation link")
+
+        for item in self.specification_items:
+            if item.parent_id is not None and item.parent_id not in specifications:
+                raise ValueError(f"specification item {item.id!r} has unknown parent {item.parent_id!r}")
+        _assert_acyclic(self.specification_items, "specification item")
+
+        for responsibility in self.responsibilities:
+            if responsibility.workflow is None:
+                continue
+            for node in responsibility.workflow.nodes:
+                if node.responsibility_id not in responsibilities:
+                    raise ValueError(
+                        f"workflow node {node.id!r} has unknown responsibility {node.responsibility_id!r}"
+                    )
+
+        for item in self.specification_responsibility_links:
+            if item.specification_id not in specifications or item.responsibility_id not in responsibilities:
+                raise ValueError(f"specification-responsibility link {item.id!r} has an unknown endpoint")
+
+        for item in self.implementation_links:
+            if item.responsibility_id not in responsibilities:
+                raise ValueError(f"implementation link {item.id!r} has unknown responsibility")
             if not _safe_relative_path(item.artifact_path):
-                raise ValueError(f"trace link {item.id!r} has an unsafe artifact path")
+                raise ValueError(f"implementation link {item.id!r} has an unsafe artifact path")
         return self
-
-    @property
-    def goals(self) -> list[ProductFunction]:
-        return self.product_functions
-
-    @property
-    def roles(self) -> list[RoleObject]:
-        return self.role_objects
-
-    @property
-    def relations(self) -> list[RoleRelation]:
-        return self.role_relations
 
 
 class ModelPatch(ModelRecord):
     name: str | None = None
     summary: str | None = None
     status: Literal["draft", "baseline"] | None = None
-    upsert_product_functions: list[ProductFunction] = Field(default_factory=list)
-    remove_product_function_ids: list[str] = Field(default_factory=list)
-    upsert_role_objects: list[RoleObject] = Field(default_factory=list)
-    remove_role_object_ids: list[str] = Field(default_factory=list)
+    upsert_specification_items: list[SpecificationItem] = Field(default_factory=list)
+    remove_specification_item_ids: list[str] = Field(default_factory=list)
     upsert_responsibilities: list[Responsibility] = Field(default_factory=list)
     remove_responsibility_ids: list[str] = Field(default_factory=list)
-    upsert_role_relations: list[RoleRelation] = Field(default_factory=list)
-    remove_role_relation_ids: list[str] = Field(default_factory=list)
-    upsert_function_role_links: list[FunctionRoleLink] = Field(default_factory=list)
-    remove_function_role_link_ids: list[str] = Field(default_factory=list)
-    upsert_trace_links: list[TraceLink] = Field(default_factory=list)
-    remove_trace_link_ids: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_patch(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        migrated = dict(data)
-        aliases = {
-            "upsert_goals": "upsert_product_functions", "remove_goal_ids": "remove_product_function_ids",
-            "upsert_roles": "upsert_role_objects", "remove_role_ids": "remove_role_object_ids",
-            "upsert_relations": "upsert_role_relations", "remove_relation_ids": "remove_role_relation_ids",
-        }
-        for old, new in aliases.items():
-            if old in migrated and new not in migrated:
-                value = migrated.pop(old)
-                if old == "upsert_goals":
-                    value = [
-                        {
-                            "id": record["id"], "name": record.get("title", record["id"]),
-                            "description": record.get("description", ""), "parent_id": record.get("parent_id"),
-                            "status": "questioned" if record.get("status") == "open" else record.get("status", "accepted"),
-                            "source_ids": record.get("source_ids", []),
-                        }
-                        for item in value
-                        for record in [_record_dict(item)]
-                    ]
-                elif old in {"upsert_roles", "upsert_relations"}:
-                    value = [_record_dict(item) for item in value]
-                migrated[new] = value
-        return migrated
+    upsert_specification_responsibility_links: list[SpecificationResponsibilityLink] = Field(default_factory=list)
+    remove_specification_responsibility_link_ids: list[str] = Field(default_factory=list)
+    upsert_implementation_links: list[ImplementationLink] = Field(default_factory=list)
+    remove_implementation_link_ids: list[str] = Field(default_factory=list)
 
 
 def apply_model_patch(model: ProjectModel, patch: ModelPatch) -> ProjectModel:
@@ -259,12 +268,13 @@ def apply_model_patch(model: ProjectModel, patch: ModelPatch) -> ProjectModel:
     if patch.status is not None:
         data["status"] = patch.status
     for field, upserts, removals in (
-        ("product_functions", patch.upsert_product_functions, patch.remove_product_function_ids),
-        ("role_objects", patch.upsert_role_objects, patch.remove_role_object_ids),
+        ("specification_items", patch.upsert_specification_items, patch.remove_specification_item_ids),
         ("responsibilities", patch.upsert_responsibilities, patch.remove_responsibility_ids),
-        ("role_relations", patch.upsert_role_relations, patch.remove_role_relation_ids),
-        ("function_role_links", patch.upsert_function_role_links, patch.remove_function_role_link_ids),
-        ("trace_links", patch.upsert_trace_links, patch.remove_trace_link_ids),
+        (
+            "specification_responsibility_links", patch.upsert_specification_responsibility_links,
+            patch.remove_specification_responsibility_link_ids,
+        ),
+        ("implementation_links", patch.upsert_implementation_links, patch.remove_implementation_link_ids),
     ):
         indexed = {item["id"]: item for item in data[field] if item["id"] not in removals}
         for item in upserts:
@@ -276,8 +286,7 @@ def apply_model_patch(model: ProjectModel, patch: ModelPatch) -> ProjectModel:
 def semantic_diff(before: ProjectModel, after: ProjectModel) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for field in (
-        "product_functions", "role_objects", "responsibilities", "role_relations",
-        "function_role_links", "trace_links",
+        "specification_items", "responsibilities", "specification_responsibility_links", "implementation_links",
     ):
         left = {item.id: item.model_dump() for item in getattr(before, field)}
         right = {item.id: item.model_dump() for item in getattr(after, field)}

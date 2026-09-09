@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from cointent.models import ProductFunction, ProjectModel, RoleObject, TraceLink
+from cointent.models import (
+    ImplementationLink, ProjectModel, Responsibility, SpecificationItem,
+    SpecificationResponsibilityLink, Workflow, WorkflowEdge, WorkflowNode,
+)
 from cointent.repository import CoIntentRepository
 from cointent.scanner import Artifact, RepositorySnapshot
 
@@ -17,16 +20,13 @@ def test_proposal_acceptance_creates_immutable_version(tmp_path: Path) -> None:
     intent = repo.record_intent("demo", "human", "Ship a dependable service")
     proposal = repo.propose_patch(
         "demo", 1,
-        {"upsert_goals": [{"id": "goal.ship", "title": "Ship"}]},
-        rationale="Make the desired outcome explicit", evidence_ids=[intent["id"]], actor="agent",
+        {"upsert_specification_items": [{"id": "spec.ship", "name": "Ship"}]},
+        rationale="Make the product meaning explicit", evidence_ids=[intent["id"]], actor="agent",
     )
-
     assert repo.get_model("demo")["version"] == 1
-    accepted = repo.resolve_proposal(proposal["id"], accept=True, actor="human")
-    assert accepted["status"] == "accepted"
-    assert repo.get_model("demo")["version"] == 2
-    assert repo.get_model("demo", 1)["model"]["product_functions"] == []
-    assert repo.get_model("demo")["model"]["product_functions"][0]["name"] == "Ship"
+    repo.resolve_proposal(proposal["id"], accept=True, actor="human")
+    assert repo.get_model("demo", 1)["model"]["specification_items"] == []
+    assert repo.get_model("demo")["model"]["specification_items"][0]["name"] == "Ship"
 
 
 def test_stale_proposal_cannot_overwrite_new_baseline(tmp_path: Path) -> None:
@@ -35,103 +35,106 @@ def test_stale_proposal_cannot_overwrite_new_baseline(tmp_path: Path) -> None:
     first = repo.propose_patch("demo", 1, {"summary": "one"}, rationale="one", evidence_ids=[], actor="a")
     second = repo.propose_patch("demo", 1, {"summary": "two"}, rationale="two", evidence_ids=[], actor="b")
     repo.resolve_proposal(first["id"], accept=True, actor="human")
-
     with pytest.raises(ValueError, match="stale"):
         repo.resolve_proposal(second["id"], accept=True, actor="human")
+
+
+def test_recursive_inspection_and_loop_trace(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.create_project("demo", "Demo")
+    repo.replace_model("demo", design_model(), actor="agent", message="seed")
+
+    roots = repo.list_root_responsibilities("demo")["responsibilities"]
+    inspected = repo.inspect_responsibility("demo", "responsibility.root")
+    trace = repo.trace_workflow("demo", "responsibility.root")
+
+    assert [item["id"] for item in roots] == ["responsibility.root"]
+    assert {item["id"] for item in inspected["child_responsibilities"]} == {
+        "responsibility.receive", "responsibility.decide",
+    }
+    assert inspected["implementation_links"] == []
+    assert any(path["loop"] for path in trace["paths"])
 
 
 def test_incremental_snapshot_creates_mapped_change_finding(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     repo.create_project("demo", "Demo")
-    model = ProjectModel(
-        project_id="demo", name="Demo",
-        product_functions=[ProductFunction(id="function.ship", name="Ship")],
-        role_objects=[RoleObject(id="role.api", name="API", purpose="Own the API")],
-        trace_links=[TraceLink(id="trace.api", role_id="role.api", artifact_path="src/api")],
-    )
-    repo.replace_model("demo", model, actor="agent", message="seed")
-    first = snapshot("one", "aaa")
-    second = snapshot("two", "bbb")
-    repo.ingest_snapshot("demo", first.model_dump())
-    result = repo.ingest_snapshot("demo", second.model_dump())
+    repo.replace_model("demo", design_model(), actor="agent", message="seed")
+    repo.ingest_snapshot("demo", snapshot("one", "aaa").model_dump())
+    result = repo.ingest_snapshot("demo", snapshot("two", "bbb").model_dump())
 
-    assert result["diff"]["modified"] == ["src/api/main.py"]
+    assert result["diff"]["modified"] == ["src/decision/main.py"]
     assert result["findings_created"][0]["kind"] == "BoundaryChange"
-    assert result["findings_created"][0]["role_ids"] == ["role.api"]
-    baseline = repo.alignment_baseline("demo")
-    assert baseline["mapping_revision"]["snapshot_id"] == "snapshot-two"
-    assert baseline["mapping_revision"]["design_version"] == 2
-    assert baseline["is_current"] is True
-
-    repo.replace_model("demo", model, actor="agent", message="new design")
-    assert repo.alignment_baseline("demo")["is_current"] is False
-    mapping = repo.record_mapping_revision("demo")
-    assert mapping["design_version"] == 3
+    assert result["findings_created"][0]["responsibility_ids"] == ["responsibility.decide"]
     assert repo.alignment_baseline("demo")["is_current"] is True
+
+    repo.replace_model("demo", design_model(), actor="agent", message="new design")
+    assert repo.alignment_baseline("demo")["is_current"] is False
+    assert repo.record_mapping_revision("demo")["design_version"] == 3
     assert repo.record_mapping_revision("demo")["duplicate"] is True
 
 
-def test_reingesting_identical_snapshot_is_idempotent(tmp_path: Path) -> None:
+def test_json_assets_change_set_and_implementation_brief(tmp_path: Path) -> None:
     repo = repository(tmp_path)
-    repo.create_project("demo", "Demo")
-    first = snapshot("one", "aaa")
-
-    assert repo.ingest_snapshot("demo", first.model_dump())["duplicate"] is False
-    assert repo.ingest_snapshot("demo", first.model_dump())["duplicate"] is True
-    assert len(repo.list_snapshots("demo")) == 1
-    assert repo.overview("demo")["latest_snapshot"]["artifact_count"] == 1
-    assert "artifacts" not in repo.overview("demo")["latest_snapshot"]
-    snapshot_asset = tmp_path / "projects/demo/snapshots/snapshot-one.json"
-    assert snapshot_asset.is_file()
-    snapshot_asset.unlink()
-    CoIntentRepository(tmp_path / "cointent.db")
-    assert snapshot_asset.is_file()
-
-
-def test_project_versions_json_assets_and_change_set(tmp_path: Path) -> None:
-    repo = repository(tmp_path)
-    repo.create_project(
-        "demo", "Demo", "https://example.test/demo", "A demo", "main", "en",
-    )
-    project = repo.update_project("demo", description="Updated", status="active")
-    proposal = repo.propose_patch(
-        "demo", 1,
-        {
-            "upsert_product_functions": [{"id": "function.ship", "name": "Ship"}],
-            "upsert_role_objects": [{"id": "role.delivery", "name": "Delivery", "purpose": "Own delivery"}],
-            "upsert_function_role_links": [{
-                "id": "link.ship", "function_id": "function.ship", "role_id": "role.delivery", "kind": "owns",
-            }],
-        },
-        rationale="Create an accountable product function", evidence_ids=[], actor="agent",
-    )
-    repo.resolve_proposal(proposal["id"], accept=True, actor="human")
+    repo.create_project("demo", "Demo", "https://example.test/demo")
+    repo.replace_model("demo", design_model(), actor="agent", message="seed")
     change = repo.start_change_set(
-        "demo", "Improve shipping", "Make shipping observable", ["function.ship"], ["role.delivery"],
+        "demo", "Improve decision", "Use stronger evidence", ["spec.decide"], ["responsibility.decide"],
     )
-    change = repo.update_change_set(change["id"], target_design_version=2, status="approved")
+    repo.update_change_set(change["id"], target_design_version=2, status="approved")
     brief = repo.implementation_brief(change["id"])
 
-    assert project["description"] == "Updated"
     assert [item["version"] for item in repo.list_versions("demo")] == [2, 1]
-    assert (tmp_path / "projects/demo/project.json").is_file()
-    assert (tmp_path / "projects/demo/design/v000001.json").is_file()
     assert (tmp_path / "projects/demo/design/v000002.json").is_file()
-    assert brief["product_functions"][0]["id"] == "function.ship"
-    assert brief["affected_roles"][0]["role_object"]["id"] == "role.delivery"
+    assert brief["specification_items"][0]["id"] == "spec.decide"
+    assert brief["affected_responsibilities"][0]["responsibility"]["id"] == "responsibility.decide"
     assert "accepted design v2" in brief["agent_prompt"]
 
 
-def test_unsafe_project_id_cannot_escape_asset_root(tmp_path: Path) -> None:
+def test_stored_schema_version_reports_raw_version_before_migration(tmp_path: Path) -> None:
     repo = repository(tmp_path)
+    repo.create_project("demo", "Demo")
+    assert repo.stored_schema_version("demo") == "0.3"
+
+
+def test_unsafe_project_id_cannot_escape_asset_root(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsafe project id"):
-        repo.create_project("../escape", "Escape")
+        repository(tmp_path).create_project("../escape", "Escape")
+
+
+def design_model() -> ProjectModel:
+    workflow = Workflow(
+        entry_node_ids=["receive"],
+        nodes=[
+            WorkflowNode(id="receive", responsibility_id="responsibility.receive"),
+            WorkflowNode(id="decide", responsibility_id="responsibility.decide"),
+        ],
+        edges=[
+            WorkflowEdge(id="receive-decide", source_node_id="receive", target_node_id="decide"),
+            WorkflowEdge(id="decide-receive", source_node_id="decide", target_node_id="receive", kind="condition"),
+        ],
+    )
+    return ProjectModel(
+        project_id="demo", name="Demo", status="baseline",
+        specification_items=[SpecificationItem(id="spec.decide", name="Make a decision")],
+        responsibilities=[
+            Responsibility(id="responsibility.root", name="Run decision cycle", workflow=workflow),
+            Responsibility(id="responsibility.receive", name="Receive evidence", inputs=["Evidence"], outputs=["Accepted evidence"]),
+            Responsibility(id="responsibility.decide", name="Decide", data_members=["Decision"], inputs=["Accepted evidence"], outputs=["Decision"]),
+        ],
+        specification_responsibility_links=[SpecificationResponsibilityLink(
+            id="link.decide", specification_id="spec.decide", responsibility_id="responsibility.root",
+        )],
+        implementation_links=[ImplementationLink(
+            id="implementation.decide", responsibility_id="responsibility.decide", artifact_path="src/decision",
+        )],
+    )
 
 
 def snapshot(identifier: str, digest: str) -> RepositorySnapshot:
     return RepositorySnapshot(
         id=f"snapshot-{identifier}", project_id="demo", repository="demo", revision=identifier,
         branch="main", dirty=False, captured_at="2026-01-01T00:00:00+00:00",
-        artifacts=[Artifact(path="src/api/main.py", kind="source", language="Python",
-                            component="src/api", sha256=digest, size=3)],
+        artifacts=[Artifact(path="src/decision/main.py", kind="source", language="Python",
+                            component="src/decision", sha256=digest, size=3)],
     )

@@ -16,10 +16,10 @@ def test_rest_surface_uses_contexture_runtime(tmp_path: Path, monkeypatch) -> No
         model = client.get("/api/v1/model?project_id=idea-factory")
 
     assert health.status_code == 200
-    assert health.json() == {"ok": True, "service": "cointent", "schema_version": "0.2", "projects": 1}
+    assert health.json() == {"ok": True, "service": "cointent", "schema_version": "0.3", "projects": 1}
     assert model.status_code == 200
     assert model.json()["model"]["project_id"] == "idea-factory"
-    assert model.json()["model"]["schema_version"] == "0.2"
+    assert model.json()["model"]["schema_version"] == "0.3"
 
 
 def test_streamable_http_mcp_requires_and_accepts_static_token(tmp_path: Path, monkeypatch) -> None:

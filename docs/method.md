@@ -1,114 +1,115 @@
 # CoIntent Modeling Method
 
-**Status:** MVP operating method
+**Status:** 0.3 operating method
 
-**Audience:** agents and humans reviewing a CoIntent Role Model
+**Purpose:** lift backend program logic into a product-readable Responsibility model without inventing a new universal notation
 
-CoIntent does not invent a new universal software-design notation. It combines a
-small, deliberately selected part of four established approaches around the
-product's actual job: converge intent into a responsibility model, then compare
-implementation evidence with that accepted model.
+CoIntent begins with a deliberately small assumption: program logic can be explained as objects that own coherent responsibilities, plus workflows that show how those objects cooperate. “Object” is a modeling lens, not an implementation constraint.
 
-## Method composition
+## What is borrowed
 
-| Need in CoIntent | Concept borrowed | What CoIntent keeps | What CoIntent leaves out |
+| CoIntent need | Established source | Selectively retained | Deliberately omitted |
 | --- | --- | --- | --- |
-| Idea to ProductFunctions | KAOS / goal-oriented requirements engineering | progressive clarification, responsibility assignment, obstacles as questions, and an assignable/verifiable stopping condition | temporal logic, proof obligations, a separate Goal tree, and claims of formal completeness |
-| ProductFunctions to RoleObjects | OOram role modeling | systems as networks of collaborating roles; roles are positions in a collaboration and are independent of classes | the complete OOram process and notation set |
-| Role boundary quality | Responsibility-Driven Design | purpose, cohesive responsibilities, knowledge/behavior ownership, and explicit collaborators | class-card ceremonies and a requirement to implement with objects |
-| Boundary contracts | IDEF0 | meaningful inputs, outputs, and constraints; hierarchical decomposition when useful | full ICOM diagram syntax and treating every Role as a function box |
-| Code to Role Model | Software Reflexion Models | a normative high-level model, an observed source model, explicit mappings, and convergence/divergence/absence findings | automatic promotion of observed code structure into intended design |
+| Define a semantic object | object modeling, Responsibility-Driven Design, and GRASP | encapsulated domain state, cohesive responsibility, Information Expert, explicit boundary contracts | class diagrams, method catalogs, inheritance, and one model object per code class |
+| Decompose a larger responsibility | RDD and hierarchical functional modeling | progressively delegate coherent work while maintaining one abstraction altitude | separate Role, RoleObject, Function, and SubResponsibility entities |
+| Describe control behavior | workflow/state-graph ideas from UML Activity and BPMN | explicit entries, sequence, condition, parallel, event, error, and cycles | executable workflow semantics, token simulation, lanes, timers, and notation conformance |
+| Clarify boundaries | IDEF0 | meaningful input and output thinking, plus hierarchical refinement | full ICOM boxes, mechanisms, and controls as mandatory fields |
+| Compare explanation with code | Software Reflexion Models | a high-level accepted model, observed source facts, explicit mappings, and classified gaps | treating discovered dependencies as architecture truth or automatically rewriting the model |
+| Refine future product meaning | KAOS / goal-oriented requirements | questioning, obstacle discovery, and practical stopping criteria when specification authoring arrives | a Goal entity in the 0.3 model, temporal logic, and proof obligations |
 
-The approaches are lenses, not badges. A field should remain empty when adding
-it would not clarify responsibility or reduce uncertainty.
+These are design lenses, not badges. CoIntent keeps only concepts that improve its own job.
 
-## Canonical review order
-
-An agent reviews a model in the following order because later checks depend on
-the authority established by earlier checks.
-
-1. **Source fidelity.** Separate words supplied by the human, accepted
-   decisions, assumptions, and code-derived hypotheses. Preserve exact intent
-   evidence before proposing a change.
-2. **ProductFunction coverage.** Refine a function only while the next level changes ownership,
-   observable behavior, constraints, or verification. A leaf function should be assignable and have a
-   credible way to recognize success.
-3. **Responsibility ownership.** Every required outcome needs a clear owner.
-   Challenge orphan responsibilities, conflicting owners, fragmented ownership,
-   and Roles whose purpose is too broad to explain.
-4. **Collaboration.** State the promises or dependencies that cross Role
-   boundaries. A Role is understood through both its responsibilities and the
-   collaborators it needs.
-5. **Operational contract.** Add inputs, outputs, and constraints when they make
-   a promise testable or prevent ambiguity. Do not fill fields mechanically.
-6. **Implementation independence.** Reject a decomposition that merely renames
-   directories, classes, services, people, or Agents. Any of those may realize a
-   Role, and mappings are many-to-many.
-7. **Evidence and uncertainty.** Cite intent sources, snapshots, tests, paths, or
-   decisions. State what the evidence cannot establish.
-
-## Two directional workflows
-
-### Human idea to accepted Role Model
+## Canonical Responsibility
 
 ```text
-conversation
-  -> preserved intent source
-  -> goal clarification
-  -> responsibility assignment
-  -> Role and collaboration proposal
-  -> method review
-  -> explicit human decision
-  -> immutable accepted version
+Responsibility
+├── Name
+├── Description
+├── Data Members
+├── Inputs
+├── Outputs
+└── Workflow? ── nodes reference other Responsibilities
 ```
 
-The stopping condition is practical rather than formal: the model is ready for
-a baseline when the important outcomes have intelligible owners, boundary
-promises, and a credible verification path, while remaining uncertainties are
-visible.
+The fields answer six product-readable questions:
 
-### Implementation to alignment view
+1. What coherent work is owned here?
+2. What meaningful state or knowledge is encapsulated here?
+3. What crosses into the boundary?
+4. What result, effect, or event leaves it?
+5. If the work is composite, which smaller Responsibilities perform it?
+6. In what sequence, branch, event path, error path, parallel path, or loop do they cooperate?
+
+Data Members are not local variables. Inputs and Outputs are not forced to mirror function signatures. All three describe the semantic contract at the current modeling altitude.
+
+## Decomposition rules
+
+An Agent proposes a child Responsibility only when it creates a useful semantic boundary. Typical evidence is a distinct business decision, meaningful transformation, owned state, reusable capability, observable outcome, or conditional path.
+
+Each Workflow canvas stays at one altitude. It contains only immediate delegated Responsibilities. Deeper details are available by entering a node, not by expanding an entire system into one graph.
+
+Stop decomposing when the next level would mainly expose code mechanics, file structure, framework plumbing, generic CRUD, functions, or local algorithms. The resulting leaf is the lowest explanation that remains useful to a product reader.
+
+Workflow is the sole composition truth:
 
 ```text
-repository scan
-  -> observed artifact snapshot
-  -> explicit many-to-many TraceLinks
-  -> intended/observed comparison
-  -> convergent, absent, divergent, boundary-change, unmapped, or uncertain finding
-  -> agent explanation
-  -> human-reviewed model patch or implementation action
+children(parent) = unique responsibility references in parent.workflow.nodes
 ```
 
-Code is evidence of what exists. It is not authority for what should exist. A
-stable implementation pattern may justify a design proposal, but it cannot
-silently edit the accepted Role Model.
+There is no second stored tree to drift from it. Cycles remain valid because real product behavior includes retry, recurring evaluation, calibration, and feedback.
 
-## Runtime enforcement in the MVP
+## Observation filter
 
-The Contexture capability graph makes this method available to MCP agents:
+Code scanning is upstream evidence collection, not semantic inference. Before modeling, Agents exclude:
 
-- `converge-design` applies the method while turning dialogue into a proposal;
-- `review-role-model` performs the seven-stage semantic review;
-- `map-implementation` applies the Reflexion Model boundary to code evidence;
-- `review-implementation-change` classifies implementation drift before action;
-- `assess-model-quality` reports deterministic structural signals such as an
-  unowned goal or an empty leaf Role.
+- frontend and presentation code;
+- logging, tracing, metrics, monitoring, and telemetry;
+- dependency injection, serialization, generated clients, configuration wiring, and deployment;
+- incidental Controller, Middleware, Repository, Adapter, Listener, file, class, and function names.
 
-Quality signals are prompts for judgment, not validation failures. Semantic
-changes remain version-bound proposals, and only an explicit acceptance creates
-a new intended-model version.
+An implementation detail may influence a Responsibility only when it represents product-visible logic. For example, a framework validator is omitted, while “Reject an ineligible refund” can remain because it is a meaningful decision.
 
-## Language and identifier policy
+## Two-way operating loop
 
-The web interface and canonical accepted model content are English. Stable IDs,
-repository paths, protocol enum values, and source-code identifiers are also
-English. `IntentSource` preserves the original human or Agent wording in any
-language so translation never replaces provenance.
+```text
+human meaning
+  → SpecificationItem
+  → accepted Responsibility / Workflow
+  → ImplementationLink
+  → observed backend code
+
+changed backend code
+  → impacted ImplementationLink
+  → affected Responsibility
+  → parent Workflow occurrences
+  → linked SpecificationItem
+  → finding, explanation, and reviewed proposal
+```
+
+The upper model is normative: it records the explanation humans and Agents accepted. The source snapshot is descriptive: it records evidence of what exists. A semantic Agent judges the gap, and all changes remain version-bound proposals until explicitly accepted.
+
+## Review questions
+
+Review a proposed model in this order:
+
+1. Is every name understandable without seeing code?
+2. Does each Responsibility own one coherent obligation?
+3. Do Data Members describe meaningful encapsulated state?
+4. Do Inputs and Outputs clarify its boundary?
+5. Does its Workflow contain only immediate peers at one altitude?
+6. Are product-significant conditions and loops preserved?
+7. Has frontend and cross-cutting technical noise been removed?
+8. Does every inferred leaf have credible backend evidence or an explicit uncertainty?
+9. Is the model explaining logic rather than copying code or architecture?
+
+Deterministic quality checks report signals, not design verdicts. Human judgment remains the authority for accepted versions.
 
 ## Primary references
 
-- A. van Lamsweerde, [KAOS tutorial](https://objectiver.com/fileadmin/download/documents/KaosTutorial.pdf)
-- Trygve Reenskaug et al., [Working with Objects: The OOram Software Engineering Method](https://www.manning.com/books/working-with-objects)
 - Rebecca Wirfs-Brock and Alan McKean, [Responsibility-Driven Design](https://www.wirfs-brock.com/Design.html)
-- NIST, [Integration Definition for Function Modeling (IDEF0), FIPS 183](https://www.govinfo.gov/app/details/GOVPUB-C13-ba43579ec72306f00c01305771ffdf3b)
+- Craig Larman, *Applying UML and Patterns* (GRASP)
+- Object Management Group, [UML specification](https://www.omg.org/spec/UML/)
+- Object Management Group, [BPMN specification](https://www.omg.org/spec/BPMN/)
+- NIST, [IDEF0, FIPS 183](https://www.govinfo.gov/app/details/GOVPUB-C13-ba43579ec72306f00c01305771ffdf3b)
 - Gail C. Murphy, David Notkin, and Kevin Sullivan, [Software Reflexion Models](https://www.cs.ubc.ca/~murphy/papers/rm/fse95.html)
+- Axel van Lamsweerde, [KAOS tutorial](https://objectiver.com/fileadmin/download/documents/KaosTutorial.pdf)

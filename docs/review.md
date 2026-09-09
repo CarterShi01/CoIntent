@@ -1,42 +1,51 @@
-# MVP 0.2 Review Walkthrough
+# CoIntent 0.3 Review Walkthrough
 
-This path exercises CoIntent in its intended Agent-native shape. The browser is the human review surface; MCP is the design authoring surface.
+The browser is the human review surface; MCP is the Agent inspection and authoring surface.
 
-## 1. Open the shared design
+## 1. Open the shared model
 
-Visit <https://cointent.enjoyapier.cloud> and sign in with the operator-provided browser username and password.
+Visit <https://cointent.enjoyapier.cloud> and sign in with the operator-provided username and password.
 
-In the top coordinate strip, confirm:
+Confirm the top bar shows:
 
-- **Project** is `Idea Factory`;
-- **Design** is the latest accepted version;
-- **Code** shows the current observed Git revision;
-- **Mapping** identifies the design/snapshot mapping revision;
-- **Review** counts pending proposals plus open alignment findings.
+- Project: **Idea Factory**;
+- Design: the latest accepted immutable version;
+- Code: the current observed Git revision;
+- Alignment: **Current** or an explicit review-needed state.
 
-These values are intentionally independent. A code scan does not create a DesignVersion and a design acceptance does not pretend that code has already changed.
+Design and code coordinates are independent. A scan never creates a design version, and accepting a design never claims the code already implements it.
 
-## 2. Walk from product function to implementation
+## 2. Follow the primary product path
 
-1. In **Function catalog**, select **Run persona-pressure evaluation**.
-2. Observe two highlighted RoleObjects: **Semantic Evaluation** owns the function and **Shared Domain Contract** governs it.
-3. Select **Semantic Evaluation**.
-4. In **Contract**, review its two responsibilities, three inputs, output, constraint, and collaborators.
-5. In **Functions**, verify the typed ProductFunction links.
-6. In **Implementation**, inspect `src/idea_eval/persona_pressure.py`, its mapping kind, origin, confidence, and evidence.
-7. In **Review**, inspect any findings, proposals, or ChangeSets that touch the RoleObject.
+1. In **Specification**, choose **Screen and compare startup ideas**.
+2. The center opens **Screen startup ideas**, the Responsibility that realizes it.
+3. Read its description and its four-node Workflow: understand signals → develop candidates → evaluate candidates → learn from outcomes.
+4. Notice the returning edge from learning to development. This is a real feedback loop, not an invalid tree edge.
+5. Choose **Evaluate idea candidates** to descend one level.
+6. Read the conditional rejection and survivor branches, then enter a child such as **Apply hard gates**.
+7. Use the breadcrumb to return to any earlier Responsibility.
 
-This is the essential system view: a product promise, its accountable responsibility objects, and its observed implementation are connected without being collapsed into one model.
+At every level, the graph contains only the focused object's immediate delegated Responsibilities. This prevents code-scale graph noise.
 
-## 3. Walk in the reverse direction
+## 3. Inspect the object contract and evidence
 
-Select another RoleObject in the map. ProductFunctions supported by that RoleObject receive a cyan highlight in the left catalog. Use the RoleObject's **Implementation** tab to move from a responsibility boundary to its code evidence.
+For each focused Responsibility, use the right side to inspect:
 
-Switch the **Design** selector to an earlier version. The workspace shows that historical accepted design while the top bar keeps the latest CodeSnapshot visible. Return to the latest version before authoring changes.
+- **Data members** — meaningful state or knowledge encapsulated by the object;
+- **Inputs** — semantic information entering the boundary;
+- **Outputs** — results, effects, decisions, or events leaving it;
+- **Backend evidence** — code paths and optional symbols that implement or support it;
+- **Alignment review** — findings, pending proposals, and related change sets.
 
-## 4. Connect an Agent host
+Enter an atomic Responsibility and confirm the center explicitly identifies it as a leaf. It is still a complete Responsibility object; it simply has no further product-relevant Workflow at this modeling depth.
 
-CoIntent's production MCP server uses Streamable HTTP and reads its bearer token from an environment variable. Never put the token in Git or directly in Codex configuration.
+## 4. Verify the implementation filter
+
+Scan the evidence shown for several leaves. Paths should refer to Idea Factory backend logic. Frontend/Studio files, styles, logging, tracing, metrics, framework wiring, and deployment files must not appear as Responsibility nodes or implementation mappings.
+
+## 5. Connect an Agent
+
+Keep the bearer token out of Git and pass it through an environment variable:
 
 ```bash
 export COINTENT_MCP_TOKEN='<operator-provided token>'
@@ -46,28 +55,25 @@ codex mcp add cointent \
 codex mcp get cointent
 ```
 
-Start a new Codex session after adding the server; an active tool catalog is not hot-reloaded.
-
-Ask the Agent:
+Start a fresh Codex session so the capability catalog is loaded, then ask:
 
 ```text
-Open CoIntent project idea-factory. Read the review-design Skill, inspect the
-current accepted design and alignment baseline, then explain one ProductFunction
-through its RoleObject contract and implementation evidence. Do not mutate state.
+Use CoIntent project idea-factory. Follow the model-responsibilities Skill.
+List the root Responsibilities, inspect Screen startup ideas, trace its Workflow,
+then enter Evaluate idea candidates and explain its contract and backend evidence.
+Do not mutate accepted state.
 ```
 
-The Agent should progressively open `cointent`, choose the appropriate Role and Skill, and read the same accepted state shown in the browser.
+The Agent should read the same version and recursive model shown in the browser, including a bounded path that reports the feedback loop.
 
-## 5. Exercise the shared write boundary
+## 6. Exercise the reviewed write boundary
 
-Give the Agent one small product-level change and ask it to:
+For a small product-logic change, ask the Agent to:
 
-1. record your exact wording with `record-intent`;
-2. start a ChangeSet with affected ProductFunction and RoleObject IDs;
-3. follow `refine-product-functions` and `decompose-responsibilities`;
-4. stage a typed, version-bound design proposal;
+1. preserve the original wording with `record-intent`;
+2. start a ChangeSet naming affected Specification and Responsibility IDs;
+3. follow `model-responsibilities` and `review-responsibility-model`;
+4. stage a typed patch against the exact current design version;
 5. stop before acceptance.
 
-Refresh the browser and open the selected RoleObject's **Review** tab. The proposal and ChangeSet should be visible while the accepted DesignVersion remains unchanged.
-
-After reviewing, explicitly accept or reject the proposal through the Agent. Acceptance creates an immutable new DesignVersion. If accepted, attach that version to the ChangeSet, generate the implementation brief, implement, ingest a new CodeSnapshot, review findings, and close the ChangeSet only with an explicit conclusion.
+The accepted browser model must remain unchanged while the proposal is pending. Explicit acceptance creates a new immutable DesignVersion. After implementation, a new backend snapshot exposes mapped changes or gaps for review before the ChangeSet is closed.

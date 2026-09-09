@@ -1,4 +1,4 @@
-"""Read-only repository facts at architectural, not symbol-map, granularity."""
+"""Read-only backend repository facts for Responsibility inference."""
 
 from __future__ import annotations
 
@@ -18,6 +18,15 @@ from pydantic import BaseModel, ConfigDict, Field
 IGNORED_PREFIXES = (
     ".git/", ".venv/", "node_modules/", "dist/", "build/", "web-dist/",
     "data/processed/", ".pytest_cache/", ".ruff_cache/", "__pycache__/",
+    "web/", "frontend/", "studio/", "ui/", "client/", "public/", "assets/",
+)
+
+FRONTEND_SEGMENTS = (
+    "/web/", "/frontend/", "/studio/", "/ui/", "/client/", "/components/", "/pages/",
+)
+FRONTEND_SUFFIXES = {".tsx", ".jsx", ".css", ".scss", ".sass", ".less", ".html", ".vue", ".svelte"}
+TECHNICAL_NOISE_SEGMENTS = (
+    "/logging/", "/logger/", "/telemetry/", "/metrics/", "/tracing/", "/monitoring/",
 )
 
 
@@ -142,8 +151,15 @@ def _git(base: Path, *args: str, required: bool = True) -> str:
 
 
 def _ignored(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    return any(normalized.startswith(prefix) or f"/{prefix}" in normalized for prefix in IGNORED_PREFIXES)
+    normalized = "/" + path.replace("\\", "/").lower()
+    relative = normalized.removeprefix("/")
+    if any(relative.startswith(prefix) or f"/{prefix}" in normalized for prefix in IGNORED_PREFIXES):
+        return True
+    if Path(relative).suffix.lower() in FRONTEND_SUFFIXES:
+        return True
+    if any(segment in normalized for segment in FRONTEND_SEGMENTS):
+        return True
+    return any(segment in normalized for segment in TECHNICAL_NOISE_SEGMENTS)
 
 
 def _language(path: str) -> str:

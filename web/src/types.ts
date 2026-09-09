@@ -10,82 +10,68 @@ export interface Project {
   created_at: string;
 }
 
-export interface ProductFunction {
+export interface SpecificationItem {
   id: string;
   name: string;
   description: string;
   parent_id: string | null;
-  status: string;
-  priority: string;
-  acceptance: string[];
-  constraints: string[];
+  status: "draft" | "accepted" | "questioned" | "deferred";
   source_ids: string[];
 }
 
-export interface RoleObject {
+export interface WorkflowNode { id: string; responsibility_id: string; note: string; }
+export interface WorkflowEdge {
   id: string;
-  name: string;
-  purpose: string;
-  parent_id: string | null;
-  status: string;
-  owns_knowledge: string[];
-  inputs: string[];
-  outputs: string[];
-  constraints: string[];
-  source_ids: string[];
+  source_node_id: string;
+  target_node_id: string;
+  kind: "next" | "condition" | "parallel" | "event" | "error";
+  label: string;
 }
+export interface Workflow { entry_node_ids: string[]; nodes: WorkflowNode[]; edges: WorkflowEdge[]; }
 
 export interface Responsibility {
   id: string;
-  role_id: string;
-  statement: string;
-  function_ids: string[];
+  name: string;
+  description: string;
+  data_members: string[];
   inputs: string[];
   outputs: string[];
-  constraints: string[];
+  workflow: Workflow | null;
+  status: "draft" | "accepted" | "questioned";
   source_ids: string[];
 }
 
-export interface RoleRelation {
+export interface SpecificationResponsibilityLink {
   id: string;
-  source_role_id: string;
-  target_role_id: string;
-  kind: string;
-  label: string;
-}
-
-export interface FunctionRoleLink {
-  id: string;
-  function_id: string;
-  role_id: string;
-  kind: "owns" | "contributes" | "governs";
+  specification_id: string;
+  responsibility_id: string;
+  kind: "realizes" | "contributes";
   confidence: number;
   evidence: string;
   source_ids: string[];
 }
 
-export interface TraceLink {
+export interface ImplementationLink {
   id: string;
-  role_id: string;
+  responsibility_id: string;
   artifact_path: string;
-  kind: string;
+  symbol: string;
+  kind: "realizes" | "supports" | "verifies" | "stores";
   confidence: number;
-  origin: string;
+  origin: "human" | "agent" | "scanner" | "runtime";
   evidence: string;
 }
 
 export interface ProjectModel {
-  schema_version: "0.2";
+  schema_version: "0.3";
   project_id: string;
   name: string;
   summary: string;
   status: string;
-  product_functions: ProductFunction[];
-  role_objects: RoleObject[];
+  specification_items: SpecificationItem[];
   responsibilities: Responsibility[];
-  role_relations: RoleRelation[];
-  function_role_links: FunctionRoleLink[];
-  trace_links: TraceLink[];
+  specification_responsibility_links: SpecificationResponsibilityLink[];
+  implementation_links: ImplementationLink[];
 }
 
 export interface ModelResponse {
@@ -98,34 +84,20 @@ export interface ModelResponse {
   model: ProjectModel;
 }
 
-export interface DesignVersion {
-  version: number;
-  parent_version: number | null;
-  actor: string;
-  message: string;
-  created_at: string;
-}
-
-export interface SnapshotSummary {
-  id: string;
-  revision: string;
-  branch: string;
-  dirty: boolean;
-  captured_at: string;
-  artifact_count?: number;
-  relation_count?: number;
-}
+export interface DesignVersion { version: number; parent_version: number | null; actor: string; message: string; created_at: string; }
+export interface SnapshotSummary { id: string; revision: string; branch: string; dirty: boolean; captured_at: string; artifact_count?: number; relation_count?: number; }
 
 export interface OverviewResponse {
   project: Project;
   version: number;
   status: string;
   counts: {
-    product_functions: number;
-    role_objects: number;
+    specification_items: number;
     responsibilities: number;
-    function_role_links: number;
-    trace_links: number;
+    workflows: number;
+    leaf_responsibilities: number;
+    specification_links: number;
+    implementation_links: number;
     open_findings: number;
     pending_proposals: number;
   };
@@ -136,13 +108,7 @@ export interface AlignmentBaseline {
   project_id: string;
   design_version: number;
   code_snapshot: null | { id: string; created_at: string; snapshot: SnapshotSummary; diff: unknown };
-  mapping_revision: null | {
-    id: string;
-    design_version: number;
-    snapshot_id: string;
-    created_at: string;
-    trace_links: TraceLink[];
-  };
+  mapping_revision: null | { id: string; design_version: number; snapshot_id: string; created_at: string; implementation_links: ImplementationLink[]; };
   is_current: boolean;
 }
 
@@ -151,17 +117,12 @@ export interface Finding {
   kind: string;
   severity: string;
   summary: string;
-  role_ids: string[];
+  responsibility_ids: string[];
   artifact_paths: string[];
   status: string;
 }
 
-export interface SemanticChange {
-  added: string[];
-  removed: string[];
-  changed: string[];
-}
-
+export interface SemanticChange { added: string[]; removed: string[]; changed: string[]; }
 export interface Proposal {
   id: string;
   project_id: string;
@@ -183,8 +144,8 @@ export interface ChangeSet {
   target_design_version: number | null;
   proposal_id: string | null;
   snapshot_id: string | null;
-  function_ids: string[];
-  role_ids: string[];
+  specification_ids: string[];
+  responsibility_ids: string[];
   status: string;
   resolution: string;
   created_at: string;

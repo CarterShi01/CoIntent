@@ -1,4 +1,4 @@
-"""SQLite persistence for immutable model versions and observed snapshots."""
+"""SQLite persistence for immutable models, backend snapshots, and alignment review."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import ModelPatch, ProjectModel, TraceLink, apply_model_patch, semantic_diff
+from .models import ImplementationLink, ModelPatch, ProjectModel, apply_model_patch, semantic_diff
 from .scanner import RepositorySnapshot, snapshot_diff
 
 
@@ -47,97 +47,52 @@ class CoIntentRepository:
             connection.close()
 
     def _initialize(self) -> None:
+        """Keep the 0.2 physical columns so existing public data upgrades without a risky rewrite."""
         with self.connection() as db:
             db.execute("PRAGMA journal_mode = WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS projects (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    repository TEXT NOT NULL DEFAULT '',
-                    current_version INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
-                    default_branch TEXT NOT NULL DEFAULT 'master',
-                    language TEXT NOT NULL DEFAULT 'en',
-                    status TEXT NOT NULL DEFAULT 'active'
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, repository TEXT NOT NULL DEFAULT '',
+                    current_version INTEGER NOT NULL, created_at TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '', default_branch TEXT NOT NULL DEFAULT 'master',
+                    language TEXT NOT NULL DEFAULT 'en', status TEXT NOT NULL DEFAULT 'active'
                 );
                 CREATE TABLE IF NOT EXISTS model_versions (
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    version INTEGER NOT NULL,
-                    parent_version INTEGER,
-                    model_json TEXT NOT NULL,
-                    actor TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (project_id, version)
+                    project_id TEXT NOT NULL REFERENCES projects(id), version INTEGER NOT NULL,
+                    parent_version INTEGER, model_json TEXT NOT NULL, actor TEXT NOT NULL,
+                    message TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (project_id, version)
                 );
                 CREATE TABLE IF NOT EXISTS intent_sources (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    speaker TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    source_ref TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), speaker TEXT NOT NULL,
+                    content TEXT NOT NULL, source_ref TEXT NOT NULL, created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS proposals (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    base_version INTEGER NOT NULL,
-                    patch_json TEXT NOT NULL,
-                    proposed_model_json TEXT NOT NULL,
-                    diff_json TEXT NOT NULL,
-                    rationale TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    actor TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    resolution TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    resolved_at TEXT
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), base_version INTEGER NOT NULL,
+                    patch_json TEXT NOT NULL, proposed_model_json TEXT NOT NULL, diff_json TEXT NOT NULL,
+                    rationale TEXT NOT NULL, evidence_json TEXT NOT NULL, actor TEXT NOT NULL, status TEXT NOT NULL,
+                    resolution TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, resolved_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS snapshots (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    snapshot_json TEXT NOT NULL,
-                    diff_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), snapshot_json TEXT NOT NULL,
+                    diff_json TEXT NOT NULL, created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS alignment_findings (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    snapshot_id TEXT NOT NULL REFERENCES snapshots(id),
-                    kind TEXT NOT NULL,
-                    severity TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    role_ids_json TEXT NOT NULL,
-                    artifact_paths_json TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    resolution TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    resolved_at TEXT
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    snapshot_id TEXT NOT NULL REFERENCES snapshots(id), kind TEXT NOT NULL, severity TEXT NOT NULL,
+                    summary TEXT NOT NULL, role_ids_json TEXT NOT NULL, artifact_paths_json TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL, status TEXT NOT NULL, resolution TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL, resolved_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS mapping_revisions (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    design_version INTEGER NOT NULL,
-                    snapshot_id TEXT NOT NULL REFERENCES snapshots(id),
-                    trace_links_json TEXT NOT NULL,
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), design_version INTEGER NOT NULL,
+                    snapshot_id TEXT NOT NULL REFERENCES snapshots(id), trace_links_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS change_sets (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(id),
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    base_design_version INTEGER NOT NULL,
-                    target_design_version INTEGER,
-                    proposal_id TEXT,
-                    snapshot_id TEXT,
-                    function_ids_json TEXT NOT NULL,
-                    role_ids_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    resolution TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), title TEXT NOT NULL,
+                    description TEXT NOT NULL, base_design_version INTEGER NOT NULL, target_design_version INTEGER,
+                    proposal_id TEXT, snapshot_id TEXT, function_ids_json TEXT NOT NULL, role_ids_json TEXT NOT NULL,
+                    status TEXT NOT NULL, resolution TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_versions_project ON model_versions(project_id, version DESC);
@@ -156,12 +111,14 @@ class CoIntentRepository:
                 if name not in columns:
                     db.execute(f"ALTER TABLE projects ADD COLUMN {name} {declaration}")
 
+    # Projects and immutable model versions
+
     def create_project(
         self, project_id: str, name: str, repository: str = "", description: str = "",
         default_branch: str = "master", language: str = "en",
     ) -> dict[str, Any]:
         self._project_dir(project_id)
-        initial = ProjectModel(project_id=project_id, name=name)
+        model = ProjectModel(project_id=project_id, name=name)
         created = _now()
         with self.connection() as db:
             db.execute(
@@ -171,10 +128,10 @@ class CoIntentRepository:
             )
             db.execute(
                 "INSERT INTO model_versions VALUES(?,?,?,?,?,?,?)",
-                (project_id, 1, None, initial.model_dump_json(), "system", "Project created", created),
+                (project_id, 1, None, model.model_dump_json(), "system", "Project created", created),
             )
         self._write_project_asset(self.get_project(project_id))
-        self._write_design_asset(project_id, 1, initial)
+        self._write_design_asset(project_id, 1, model)
         return self.get_model(project_id)
 
     def ensure_project(self, project_id: str, name: str, repository: str = "") -> dict[str, Any]:
@@ -205,12 +162,10 @@ class CoIntentRepository:
     ) -> dict[str, Any]:
         if status is not None and status not in {"active", "archived"}:
             raise ValueError("status must be active or archived")
-        updates = {
-            key: value for key, value in {
-                "name": name, "description": description, "repository": repository,
-                "default_branch": default_branch, "language": language, "status": status,
-            }.items() if value is not None
-        }
+        updates = {key: value for key, value in {
+            "name": name, "description": description, "repository": repository,
+            "default_branch": default_branch, "language": language, "status": status,
+        }.items() if value is not None}
         if updates:
             assignments = ",".join(f"{key}=?" for key in updates)
             with self.connection() as db:
@@ -230,20 +185,30 @@ class CoIntentRepository:
                 raise KeyError(f"unknown project {project_id!r}")
             selected = version if version is not None else int(project["current_version"])
             row = db.execute(
-                "SELECT * FROM model_versions WHERE project_id=? AND version=?",
-                (project_id, selected),
+                "SELECT * FROM model_versions WHERE project_id=? AND version=?", (project_id, selected)
             ).fetchone()
             if row is None:
                 raise KeyError(f"unknown model version {project_id!r}@{selected}")
         return {
-            "project": dict(project),
-            "version": selected,
-            "parent_version": row["parent_version"],
-            "actor": row["actor"],
-            "message": row["message"],
-            "created_at": row["created_at"],
+            "project": dict(project), "version": selected, "parent_version": row["parent_version"],
+            "actor": row["actor"], "message": row["message"], "created_at": row["created_at"],
             "model": ProjectModel.model_validate_json(row["model_json"]).model_dump(),
         }
+
+    def stored_schema_version(self, project_id: str, version: int | None = None) -> str:
+        """Return the on-disk schema marker before read migration is applied."""
+        with self.connection() as db:
+            project = db.execute("SELECT current_version FROM projects WHERE id=?", (project_id,)).fetchone()
+            if project is None:
+                raise KeyError(f"unknown project {project_id!r}")
+            selected = version if version is not None else int(project[0])
+            row = db.execute(
+                "SELECT model_json FROM model_versions WHERE project_id=? AND version=?",
+                (project_id, selected),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown model version {project_id!r}@{selected}")
+        return str(json.loads(row[0]).get("schema_version", "0.1"))
 
     def list_versions(self, project_id: str) -> list[dict[str, Any]]:
         self.get_project(project_id)
@@ -272,6 +237,8 @@ class CoIntentRepository:
         self._write_design_asset(project_id, version, model)
         return self.get_model(project_id)
 
+    # Original intent and proposal lifecycle
+
     def record_intent(self, project_id: str, speaker: str, content: str, source_ref: str = "") -> dict[str, Any]:
         self.get_model(project_id)
         record = {
@@ -294,8 +261,8 @@ class CoIntentRepository:
         return [dict(row) for row in rows]
 
     def propose_patch(
-        self, project_id: str, base_version: int, patch_data: dict[str, Any],
-        *, rationale: str, evidence_ids: list[str], actor: str,
+        self, project_id: str, base_version: int, patch_data: dict[str, Any], *,
+        rationale: str, evidence_ids: list[str], actor: str,
     ) -> dict[str, Any]:
         current = self.get_model(project_id)
         if current["version"] != base_version:
@@ -355,20 +322,17 @@ class CoIntentRepository:
                 ).fetchone()
                 if project is None or int(project[0]) != int(proposal["base_version"]):
                     raise ValueError("proposal is stale and must be rebased before acceptance")
+                model = ProjectModel.model_validate_json(proposal["proposed_model_json"])
                 next_version = int(proposal["base_version"]) + 1
                 db.execute(
                     "INSERT INTO model_versions VALUES(?,?,?,?,?,?,?)",
-                    (proposal["project_id"], next_version, proposal["base_version"],
-                     proposal["proposed_model_json"], actor, proposal["rationale"], _now()),
+                    (proposal["project_id"], next_version, proposal["base_version"], model.model_dump_json(),
+                     actor, proposal["rationale"], _now()),
                 )
                 db.execute(
-                    "UPDATE projects SET current_version=? WHERE id=?",
-                    (next_version, proposal["project_id"]),
+                    "UPDATE projects SET current_version=? WHERE id=?", (next_version, proposal["project_id"])
                 )
-                accepted_asset = (
-                    proposal["project_id"], next_version,
-                    ProjectModel.model_validate_json(proposal["proposed_model_json"]),
-                )
+                accepted_asset = proposal["project_id"], next_version, model
             db.execute(
                 "UPDATE proposals SET status=?,resolution=?,resolved_at=? WHERE id=?",
                 (status, resolution, _now(), proposal_id),
@@ -376,6 +340,157 @@ class CoIntentRepository:
         if accepted_asset is not None:
             self._write_design_asset(*accepted_asset)
         return self.get_proposal(proposal_id)
+
+    # Responsibility model queries
+
+    def inspect_specification_tree(
+        self, project_id: str, version: int | None = None,
+        root_id: str | None = None, depth: int = 20,
+    ) -> dict[str, Any]:
+        response = self.get_model(project_id, version)
+        model = ProjectModel.model_validate(response["model"])
+        selected = _select_hierarchy(model.specification_items, root_id, depth)
+        ids = {item.id for item in selected}
+        return {
+            "project_id": project_id, "version": response["version"],
+            "specification_items": [item.model_dump() for item in selected],
+            "links": [item.model_dump() for item in model.specification_responsibility_links
+                      if item.specification_id in ids],
+        }
+
+    def inspect_specification_item(
+        self, project_id: str, specification_id: str, version: int | None = None,
+    ) -> dict[str, Any]:
+        response = self.get_model(project_id, version)
+        model = ProjectModel.model_validate(response["model"])
+        item = next((value for value in model.specification_items if value.id == specification_id), None)
+        if item is None:
+            raise KeyError(f"unknown specification item {specification_id!r}")
+        links = [value for value in model.specification_responsibility_links
+                 if value.specification_id == specification_id]
+        by_id = {value.id: value for value in model.responsibilities}
+        return {
+            "project_id": project_id, "version": response["version"],
+            "specification_item": item.model_dump(),
+            "responsibilities": [
+                {"link": link.model_dump(), "responsibility": by_id[link.responsibility_id].model_dump()}
+                for link in links
+            ],
+        }
+
+    def inspect_responsibility(
+        self, project_id: str, responsibility_id: str, version: int | None = None,
+    ) -> dict[str, Any]:
+        response = self.get_model(project_id, version)
+        model = ProjectModel.model_validate(response["model"])
+        by_id = {item.id: item for item in model.responsibilities}
+        item = by_id.get(responsibility_id)
+        if item is None:
+            raise KeyError(f"unknown responsibility {responsibility_id!r}")
+        child_ids = [] if item.workflow is None else [node.responsibility_id for node in item.workflow.nodes]
+        parent_occurrences = [
+            {"parent_id": parent.id, "parent_name": parent.name, "node_id": node.id}
+            for parent in model.responsibilities if parent.workflow is not None
+            for node in parent.workflow.nodes if node.responsibility_id == responsibility_id
+        ]
+        spec_links = [link for link in model.specification_responsibility_links
+                      if link.responsibility_id == responsibility_id]
+        spec_by_id = {value.id: value for value in model.specification_items}
+        return {
+            "project_id": project_id, "version": response["version"],
+            "responsibility": item.model_dump(),
+            "child_responsibilities": [by_id[value].model_dump() for value in dict.fromkeys(child_ids)],
+            "parent_occurrences": parent_occurrences,
+            "specification_items": [
+                {"link": link.model_dump(), "specification_item": spec_by_id[link.specification_id].model_dump()}
+                for link in spec_links
+            ],
+            "implementation_links": [item.model_dump() for item in model.implementation_links
+                                     if item.responsibility_id == responsibility_id],
+        }
+
+    def list_root_responsibilities(self, project_id: str, version: int | None = None) -> dict[str, Any]:
+        response = self.get_model(project_id, version)
+        model = ProjectModel.model_validate(response["model"])
+        referenced = {
+            node.responsibility_id for parent in model.responsibilities if parent.workflow is not None
+            for node in parent.workflow.nodes
+        }
+        roots = [item.model_dump() for item in model.responsibilities if item.id not in referenced]
+        return {"project_id": project_id, "version": response["version"], "responsibilities": roots}
+
+    def trace_workflow(
+        self, project_id: str, responsibility_id: str, version: int | None = None,
+        max_steps: int = 32, max_paths: int = 64,
+    ) -> dict[str, Any]:
+        inspected = self.inspect_responsibility(project_id, responsibility_id, version)
+        responsibility = inspected["responsibility"]
+        workflow = responsibility.get("workflow")
+        if not workflow or not workflow["nodes"]:
+            return {"project_id": project_id, "version": inspected["version"],
+                    "responsibility_id": responsibility_id, "paths": [], "leaf": True}
+        nodes = {item["id"]: item for item in workflow["nodes"]}
+        outgoing: dict[str, list[dict[str, Any]]] = {}
+        for edge in workflow["edges"]:
+            outgoing.setdefault(edge["source_node_id"], []).append(edge)
+        paths: list[dict[str, Any]] = []
+
+        def walk(node_id: str, visits: list[str], traversed: list[dict[str, Any]]) -> None:
+            if len(paths) >= max(1, min(max_paths, 256)):
+                return
+            repeated = node_id in visits
+            next_visits = [*visits, node_id]
+            if repeated or len(next_visits) >= max(1, min(max_steps, 256)) or not outgoing.get(node_id):
+                paths.append({
+                    "node_ids": next_visits,
+                    "responsibility_ids": [nodes[value]["responsibility_id"] for value in next_visits],
+                    "edges": traversed,
+                    "loop": repeated,
+                    "truncated": len(next_visits) >= max_steps,
+                })
+                return
+            for edge in outgoing[node_id]:
+                walk(edge["target_node_id"], next_visits, [*traversed, edge])
+
+        for entry in workflow["entry_node_ids"]:
+            walk(entry, [], [])
+        return {"project_id": project_id, "version": inspected["version"],
+                "responsibility_id": responsibility_id, "paths": paths, "leaf": False}
+
+    def specification_coverage(self, project_id: str, version: int | None = None) -> dict[str, Any]:
+        response = self.get_model(project_id, version)
+        model = ProjectModel.model_validate(response["model"])
+        parent_ids = {item.parent_id for item in model.specification_items if item.parent_id}
+        leaves = {item.id for item in model.specification_items if item.id not in parent_ids}
+        covered = {item.specification_id for item in model.specification_responsibility_links}
+        return {
+            "project_id": project_id, "version": response["version"],
+            "leaf_specifications": len(leaves), "covered_leaf_specifications": len(leaves & covered),
+            "uncovered_specification_ids": sorted(leaves - covered),
+        }
+
+    def responsibility_quality(self, project_id: str, version: int | None = None) -> dict[str, Any]:
+        response = self.get_model(project_id, version)
+        model = ProjectModel.model_validate(response["model"])
+        mapped = {item.responsibility_id for item in model.implementation_links}
+        signals: list[dict[str, str]] = []
+        for item in model.responsibilities:
+            if not item.description:
+                signals.append({"kind": "missing_description", "element_id": item.id,
+                                "message": "Responsibility has no plain-language description."})
+            if item.workflow is None and item.id not in mapped:
+                signals.append({"kind": "unmapped_leaf", "element_id": item.id,
+                                "message": "Leaf Responsibility has no backend implementation evidence."})
+            if item.workflow is not None:
+                reachable = _reachable(item.workflow.entry_node_ids, item.workflow.edges)
+                for node in item.workflow.nodes:
+                    if node.id not in reachable:
+                        signals.append({"kind": "unreachable_node", "element_id": item.id,
+                                        "message": f"Workflow node {node.id} is unreachable from an entry."})
+        return {"project_id": project_id, "design_version": response["version"],
+                "verdict": "judgment_required", "signals": signals}
+
+    # Backend snapshots and implementation alignment
 
     def ingest_snapshot(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
         snapshot = RepositorySnapshot.model_validate(data)
@@ -397,12 +512,12 @@ class CoIntentRepository:
                 (snapshot.id, project_id, snapshot.model_dump_json(), json.dumps(delta), _now()),
             )
             current = self.get_model(project_id)
-            mapping_id = _id("mapping")
+            links = current["model"]["implementation_links"]
             db.execute(
                 """INSERT INTO mapping_revisions(id,project_id,design_version,snapshot_id,trace_links_json,created_at)
                    VALUES(?,?,?,?,?,?)""",
-                (mapping_id, project_id, current["version"], snapshot.id,
-                 json.dumps(current["model"]["trace_links"], separators=(",", ":")), _now()),
+                (_id("mapping"), project_id, current["version"], snapshot.id,
+                 json.dumps(links, separators=(",", ":"), sort_keys=True), _now()),
             )
         self._write_snapshot_asset(snapshot)
         findings = self._derive_findings(project_id, snapshot, delta, initial=previous is None)
@@ -419,45 +534,35 @@ class CoIntentRepository:
         changed += [(path, "removed") for path in delta["removed"]]
         created: list[dict[str, Any]] = []
         for path, change in changed:
-            roles = sorted({link.role_id for link in model.trace_links if _path_matches(link.artifact_path, path)})
-            if not roles and change == "added" and not _architectural_source(path):
+            responsibility_ids = sorted({
+                link.responsibility_id for link in model.implementation_links
+                if _path_matches(link.artifact_path, path)
+            })
+            if not responsibility_ids and change == "added" and not _semantic_backend_source(path):
                 continue
-            if change == "removed" and roles:
+            if change == "removed" and responsibility_ids:
                 kind, severity = "Absent", "high"
-                summary = f"Mapped implementation artifact was removed: {path}"
-            elif roles:
+                summary = f"Mapped backend artifact was removed: {path}"
+            elif responsibility_ids:
                 kind, severity = "BoundaryChange", "medium"
-                summary = f"Implementation changed inside mapped role boundary: {path}"
+                summary = f"Backend implementation changed inside a mapped Responsibility: {path}"
             else:
                 kind, severity = "Unmapped", "low"
-                summary = f"New implementation artifact has no role mapping: {path}"
+                summary = f"New backend program logic has no Responsibility mapping: {path}"
             created.append(self._insert_finding(
-                project_id, snapshot.id, kind, severity, summary, roles, [path],
+                project_id, snapshot.id, kind, severity, summary, responsibility_ids, [path],
                 {"change": change, "snapshot": snapshot.id},
             ))
-        for relation in delta["relations_added"]:
-            source_roles = {link.role_id for link in model.trace_links if _path_matches(link.artifact_path, relation["source"])}
-            target_roles = {link.role_id for link in model.trace_links if _path_matches(link.artifact_path, relation["target"])}
-            pairs = {(a, b) for a in source_roles for b in target_roles if a != b}
-            declared = {(item.source_role_id, item.target_role_id) for item in model.role_relations}
-            undeclared = sorted(pairs - declared)
-            if undeclared:
-                created.append(self._insert_finding(
-                    project_id, snapshot.id, "Divergent", "medium",
-                    "A new code dependency crosses role boundaries without a declared relationship.",
-                    sorted({role for pair in undeclared for role in pair}),
-                    [relation["source"], relation["target"]], relation,
-                ))
         return created
 
     def _insert_finding(
         self, project_id: str, snapshot_id: str, kind: str, severity: str, summary: str,
-        role_ids: list[str], paths: list[str], evidence: dict[str, Any],
+        responsibility_ids: list[str], paths: list[str], evidence: dict[str, Any],
     ) -> dict[str, Any]:
         item = {
             "id": _id("finding"), "project_id": project_id, "snapshot_id": snapshot_id,
             "kind": kind, "severity": severity, "summary": summary,
-            "role_ids_json": json.dumps(role_ids), "artifact_paths_json": json.dumps(paths),
+            "role_ids_json": json.dumps(responsibility_ids), "artifact_paths_json": json.dumps(paths),
             "evidence_json": json.dumps(evidence), "status": "open", "created_at": _now(),
         }
         with self.connection() as db:
@@ -485,6 +590,13 @@ class CoIntentRepository:
             ).fetchall()
         return [{"id": row["id"], "created_at": row["created_at"],
                  "snapshot": json.loads(row["snapshot_json"]), "diff": json.loads(row["diff_json"])} for row in rows]
+
+    def compare_snapshots(self, project_id: str, from_snapshot_id: str, to_snapshot_id: str) -> dict[str, Any]:
+        before = RepositorySnapshot.model_validate(self.get_snapshot(from_snapshot_id)["snapshot"])
+        after = RepositorySnapshot.model_validate(self.get_snapshot(to_snapshot_id)["snapshot"])
+        if before.project_id != project_id or after.project_id != project_id:
+            raise ValueError("snapshot does not belong to project")
+        return snapshot_diff(before, after)
 
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with self.connection() as db:
@@ -518,82 +630,19 @@ class CoIntentRepository:
             raise KeyError(f"unknown finding {finding_id!r}")
         return self.get_finding(finding_id)
 
-    def inspect_function_tree(
-        self, project_id: str, version: int | None = None, root_id: str | None = None, depth: int = 20,
+    def find_artifact_responsibilities(
+        self, project_id: str, artifact_path: str, version: int | None = None,
     ) -> dict[str, Any]:
         response = self.get_model(project_id, version)
         model = ProjectModel.model_validate(response["model"])
-        selected = _select_hierarchy(model.product_functions, root_id, depth)
-        links = [
-            item.model_dump() for item in model.function_role_links
-            if item.function_id in {function.id for function in selected}
-        ]
-        return {"project_id": project_id, "version": response["version"],
-                "product_functions": [item.model_dump() for item in selected], "function_role_links": links}
-
-    def inspect_product_function(self, project_id: str, function_id: str, version: int | None = None) -> dict[str, Any]:
-        response = self.get_model(project_id, version)
-        model = ProjectModel.model_validate(response["model"])
-        item = next((value for value in model.product_functions if value.id == function_id), None)
-        if item is None:
-            raise KeyError(f"unknown product function {function_id!r}")
-        links = [value.model_dump() for value in model.function_role_links if value.function_id == function_id]
-        return {"project_id": project_id, "version": response["version"], "product_function": item.model_dump(),
-                "role_links": links}
-
-    def inspect_role_forest(
-        self, project_id: str, version: int | None = None, root_id: str | None = None, depth: int = 20,
-    ) -> dict[str, Any]:
-        response = self.get_model(project_id, version)
-        model = ProjectModel.model_validate(response["model"])
-        selected = _select_hierarchy(model.role_objects, root_id, depth)
-        role_ids = {item.id for item in selected}
+        links = [item for item in model.implementation_links if
+                 artifact_path == item.artifact_path or artifact_path.startswith(f"{item.artifact_path.rstrip('/')}/")]
+        ids = {item.responsibility_id for item in links}
         return {
-            "project_id": project_id, "version": response["version"],
-            "role_objects": [item.model_dump() for item in selected],
-            "role_relations": [item.model_dump() for item in model.role_relations
-                               if item.source_role_id in role_ids and item.target_role_id in role_ids],
-            "function_role_links": [item.model_dump() for item in model.function_role_links if item.role_id in role_ids],
+            "project_id": project_id, "design_version": response["version"], "artifact_path": artifact_path,
+            "implementation_links": [item.model_dump() for item in links],
+            "responsibilities": [item.model_dump() for item in model.responsibilities if item.id in ids],
         }
-
-    def inspect_role_object(self, project_id: str, role_id: str, version: int | None = None) -> dict[str, Any]:
-        response = self.get_model(project_id, version)
-        model = ProjectModel.model_validate(response["model"])
-        role = next((item for item in model.role_objects if item.id == role_id), None)
-        if role is None:
-            raise KeyError(f"unknown role object {role_id!r}")
-        return {
-            "project_id": project_id, "version": response["version"], "role_object": role.model_dump(),
-            "responsibilities": [item.model_dump() for item in model.responsibilities if item.role_id == role_id],
-            "children": [item.model_dump() for item in model.role_objects if item.parent_id == role_id],
-            "collaborations": [item.model_dump() for item in model.role_relations
-                               if role_id in {item.source_role_id, item.target_role_id}],
-            "product_functions": [
-                {"link": link.model_dump(), "function": function.model_dump()}
-                for link in model.function_role_links if link.role_id == role_id
-                for function in model.product_functions if function.id == link.function_id
-            ],
-            "implementation_links": [item.model_dump() for item in model.trace_links if item.role_id == role_id],
-        }
-
-    def function_coverage(self, project_id: str, version: int | None = None) -> dict[str, Any]:
-        response = self.get_model(project_id, version)
-        model = ProjectModel.model_validate(response["model"])
-        parent_ids = {item.parent_id for item in model.product_functions if item.parent_id}
-        leaf_ids = {item.id for item in model.product_functions if item.id not in parent_ids}
-        owned = {item.function_id for item in model.function_role_links if item.kind == "owns"}
-        return {
-            "project_id": project_id, "version": response["version"],
-            "leaf_functions": len(leaf_ids), "owned_leaf_functions": len(leaf_ids & owned),
-            "unowned_function_ids": sorted(leaf_ids - owned),
-        }
-
-    def compare_snapshots(self, project_id: str, from_snapshot_id: str, to_snapshot_id: str) -> dict[str, Any]:
-        before = RepositorySnapshot.model_validate(self.get_snapshot(from_snapshot_id)["snapshot"])
-        after = RepositorySnapshot.model_validate(self.get_snapshot(to_snapshot_id)["snapshot"])
-        if before.project_id != project_id or after.project_id != project_id:
-            raise ValueError("snapshot does not belong to project")
-        return snapshot_diff(before, after)
 
     def alignment_baseline(self, project_id: str) -> dict[str, Any]:
         current = self.get_model(project_id)
@@ -606,30 +655,27 @@ class CoIntentRepository:
         latest_snapshot_id = snapshots[0]["id"] if snapshots else None
         return {
             "project_id": project_id, "design_version": current["version"],
-            "code_snapshot": snapshots[0] if snapshots else None,
-            "mapping_revision": mapping_item,
+            "code_snapshot": snapshots[0] if snapshots else None, "mapping_revision": mapping_item,
             "is_current": bool(mapping_item and mapping_item["design_version"] == current["version"]
                                and mapping_item["snapshot_id"] == latest_snapshot_id),
         }
 
     def record_mapping_revision(
-        self, project_id: str, design_version: int | None = None,
-        snapshot_id: str | None = None, trace_links: list[dict[str, Any]] | None = None,
+        self, project_id: str, design_version: int | None = None, snapshot_id: str | None = None,
+        implementation_links: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         design = self.get_model(project_id, design_version)
         snapshots = self.list_snapshots(project_id, 1)
         selected_snapshot = snapshot_id or (snapshots[0]["id"] if snapshots else None)
         if selected_snapshot is None:
             raise ValueError("a code snapshot is required before recording a mapping revision")
-        snapshot = self.get_snapshot(selected_snapshot)
-        if snapshot["project_id"] != project_id:
+        if self.get_snapshot(selected_snapshot)["project_id"] != project_id:
             raise ValueError("snapshot does not belong to project")
         model = ProjectModel.model_validate(design["model"])
-        selected_links = trace_links if trace_links is not None else design["model"]["trace_links"]
-        validated_links = [TraceLink.model_validate(item) for item in selected_links]
-        candidate = model.model_copy(update={"trace_links": validated_links})
-        ProjectModel.model_validate(candidate.model_dump())
-        encoded = json.dumps([item.model_dump() for item in validated_links], separators=(",", ":"), sort_keys=True)
+        selected = implementation_links if implementation_links is not None else design["model"]["implementation_links"]
+        validated = [ImplementationLink.model_validate(item) for item in selected]
+        ProjectModel.model_validate(model.model_copy(update={"implementation_links": validated}).model_dump())
+        encoded = json.dumps([item.model_dump() for item in validated], separators=(",", ":"), sort_keys=True)
         with self.connection() as db:
             existing = db.execute(
                 """SELECT * FROM mapping_revisions WHERE project_id=? AND design_version=?
@@ -639,14 +685,13 @@ class CoIntentRepository:
             if existing is not None:
                 return {**_mapping_revision(existing), "duplicate": True}
             item = {
-                "id": _id("mapping"), "project_id": project_id,
-                "design_version": design["version"], "snapshot_id": selected_snapshot,
-                "trace_links_json": encoded, "created_at": _now(),
+                "id": _id("mapping"), "project_id": project_id, "design_version": design["version"],
+                "snapshot_id": selected_snapshot, "trace_links_json": encoded, "created_at": _now(),
             }
-            db.execute(
-                """INSERT INTO mapping_revisions(id,project_id,design_version,snapshot_id,trace_links_json,created_at)
-                   VALUES(:id,:project_id,:design_version,:snapshot_id,:trace_links_json,:created_at)""", item,
-            )
+            db.execute("""
+                INSERT INTO mapping_revisions(id,project_id,design_version,snapshot_id,trace_links_json,created_at)
+                VALUES(:id,:project_id,:design_version,:snapshot_id,:trace_links_json,:created_at)
+            """, item)
         return {**self.get_mapping_revision(item["id"]), "duplicate": False}
 
     def get_mapping_revision(self, mapping_id: str) -> dict[str, Any]:
@@ -660,21 +705,32 @@ class CoIntentRepository:
         self.get_project(project_id)
         with self.connection() as db:
             rows = db.execute(
-                """SELECT * FROM mapping_revisions WHERE project_id=?
-                   ORDER BY created_at DESC LIMIT ?""", (project_id, max(1, min(limit, 100))),
+                "SELECT * FROM mapping_revisions WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+                (project_id, max(1, min(limit, 100))),
             ).fetchall()
         return [_mapping_revision(row) for row in rows]
 
+    def compare_design_to_code(self, project_id: str) -> dict[str, Any]:
+        return {
+            "baseline": self.alignment_baseline(project_id),
+            "coverage": self.specification_coverage(project_id),
+            "quality": self.responsibility_quality(project_id),
+            "findings": self.list_findings(project_id),
+        }
+
+    # Change lifecycle, history, and summaries
+
     def start_change_set(
         self, project_id: str, title: str, description: str = "",
-        function_ids: list[str] | None = None, role_ids: list[str] | None = None,
+        specification_ids: list[str] | None = None, responsibility_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         current = self.get_model(project_id)
         item = {
             "id": _id("change"), "project_id": project_id, "title": title, "description": description,
             "base_design_version": current["version"], "target_design_version": None,
             "proposal_id": None, "snapshot_id": None,
-            "function_ids_json": json.dumps(function_ids or []), "role_ids_json": json.dumps(role_ids or []),
+            "function_ids_json": json.dumps(specification_ids or []),
+            "role_ids_json": json.dumps(responsibility_ids or []),
             "status": "designing", "resolution": "", "created_at": _now(), "updated_at": _now(),
         }
         with self.connection() as db:
@@ -693,9 +749,14 @@ class CoIntentRepository:
     def list_change_sets(self, project_id: str, status: str = "all") -> list[dict[str, Any]]:
         with self.connection() as db:
             if status == "all":
-                rows = db.execute("SELECT * FROM change_sets WHERE project_id=? ORDER BY updated_at DESC", (project_id,)).fetchall()
+                rows = db.execute(
+                    "SELECT * FROM change_sets WHERE project_id=? ORDER BY updated_at DESC", (project_id,)
+                ).fetchall()
             else:
-                rows = db.execute("SELECT * FROM change_sets WHERE project_id=? AND status=? ORDER BY updated_at DESC", (project_id, status)).fetchall()
+                rows = db.execute(
+                    "SELECT * FROM change_sets WHERE project_id=? AND status=? ORDER BY updated_at DESC",
+                    (project_id, status),
+                ).fetchall()
         return [_change_set(row) for row in rows]
 
     def update_change_set(
@@ -712,7 +773,9 @@ class CoIntentRepository:
         updates["updated_at"] = _now()
         assignments = ",".join(f"{key}=?" for key in updates)
         with self.connection() as db:
-            changed = db.execute(f"UPDATE change_sets SET {assignments} WHERE id=?", (*updates.values(), change_set_id)).rowcount
+            changed = db.execute(
+                f"UPDATE change_sets SET {assignments} WHERE id=?", (*updates.values(), change_set_id)
+            ).rowcount
         if not changed:
             raise KeyError(f"unknown change set {change_set_id!r}")
         return self.get_change_set(change_set_id)
@@ -721,21 +784,21 @@ class CoIntentRepository:
         change = self.get_change_set(change_set_id)
         response = self.get_model(change["project_id"], change["target_design_version"] or None)
         model = ProjectModel.model_validate(response["model"])
-        functions = [item.model_dump() for item in model.product_functions if item.id in change["function_ids"]]
-        roles = [self.inspect_role_object(change["project_id"], role_id, response["version"])
-                 for role_id in change["role_ids"]]
+        specifications = [item.model_dump() for item in model.specification_items
+                          if item.id in change["specification_ids"]]
+        responsibilities = [self.inspect_responsibility(change["project_id"], value, response["version"])
+                            for value in change["responsibility_ids"]]
         return {
             "change_set": change, "design_version": response["version"],
-            "product_functions": functions, "affected_roles": roles,
+            "specification_items": specifications, "affected_responsibilities": responsibilities,
             "agent_prompt": (
                 f"Implement change set {change['id']} against accepted design v{response['version']}. "
-                "Preserve RoleObject contracts, add verification evidence, then ingest a new code snapshot."
+                "Preserve Responsibility contracts and Workflow semantics, add backend evidence, then ingest a snapshot."
             ),
         }
 
     def export_design(self, project_id: str, version: int | None = None) -> dict[str, Any]:
-        response = self.get_model(project_id, version)
-        return {"export_schema": "cointent.design-bundle/0.2", **response}
+        return {"export_schema": "cointent.design-bundle/0.3", **self.get_model(project_id, version)}
 
     def compare_versions(self, project_id: str, from_version: int, to_version: int) -> dict[str, Any]:
         before = ProjectModel.model_validate(self.get_model(project_id, from_version)["model"])
@@ -754,28 +817,32 @@ class CoIntentRepository:
             open_findings = db.execute(
                 "SELECT COUNT(*) FROM alignment_findings WHERE project_id=? AND status='open'", (project_id,)
             ).fetchone()[0]
-            proposals = db.execute(
+            pending_proposals = db.execute(
                 "SELECT COUNT(*) FROM proposals WHERE project_id=? AND status='pending'", (project_id,)
             ).fetchone()[0]
-        snapshot_summary = None
+        summary = None
         if snapshot:
             observed = json.loads(snapshot["snapshot_json"])
-            snapshot_summary = {
-                key: observed[key]
-                for key in ("id", "repository", "revision", "branch", "dirty", "captured_at")
-            }
-            snapshot_summary["artifact_count"] = len(observed["artifacts"])
-            snapshot_summary["relation_count"] = len(observed["relations"])
+            summary = {key: observed[key] for key in
+                       ("id", "repository", "revision", "branch", "dirty", "captured_at")}
+            summary["artifact_count"] = len(observed["artifacts"])
+            summary["relation_count"] = len(observed["relations"])
+        workflows = sum(1 for item in model["responsibilities"] if item.get("workflow"))
+        leaves = len(model["responsibilities"]) - workflows
         return {
             "project": current["project"], "version": current["version"], "status": model["status"],
-            "counts": {"product_functions": len(model["product_functions"]), "role_objects": len(model["role_objects"]),
-                       "responsibilities": len(model["responsibilities"]),
-                       "function_role_links": len(model["function_role_links"]),
-                       "trace_links": len(model["trace_links"]), "open_findings": open_findings,
-                       "pending_proposals": proposals},
-            "latest_snapshot": snapshot_summary,
-            "snapshot_recorded_at": snapshot["created_at"] if snapshot else None,
+            "counts": {
+                "specification_items": len(model["specification_items"]),
+                "responsibilities": len(model["responsibilities"]), "workflows": workflows,
+                "leaf_responsibilities": leaves,
+                "specification_links": len(model["specification_responsibility_links"]),
+                "implementation_links": len(model["implementation_links"]),
+                "open_findings": open_findings, "pending_proposals": pending_proposals,
+            },
+            "latest_snapshot": summary, "snapshot_recorded_at": snapshot["created_at"] if snapshot else None,
         }
+
+    # Portable JSON assets
 
     def _backfill_assets(self) -> None:
         with self.connection() as db:
@@ -789,8 +856,7 @@ class CoIntentRepository:
         for row in versions:
             target = self._project_dir(row["project_id"]) / "design" / f"v{int(row['version']):06d}.json"
             if not target.exists():
-                model = ProjectModel.model_validate_json(row["model_json"])
-                _atomic_json(target, model.model_dump())
+                _atomic_json(target, ProjectModel.model_validate_json(row["model_json"]).model_dump())
         for row in snapshots:
             snapshot = RepositorySnapshot.model_validate_json(row["snapshot_json"])
             target = self._project_dir(snapshot.project_id) / "snapshots" / f"{snapshot.id}.json"
@@ -799,10 +865,8 @@ class CoIntentRepository:
 
     def _project_dir(self, project_id: str) -> Path:
         candidate = Path(project_id)
-        if (
-            not project_id or candidate.is_absolute() or "/" in project_id or "\\" in project_id
-            or any(part in {"", ".", ".."} for part in candidate.parts)
-        ):
+        if (not project_id or candidate.is_absolute() or "/" in project_id or "\\" in project_id
+                or any(part in {"", ".", ".."} for part in candidate.parts)):
             raise ValueError("unsafe project id")
         return self.asset_root / project_id
 
@@ -826,14 +890,33 @@ def _proposal(row: sqlite3.Row) -> dict[str, Any]:
 
 def _change_set(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
-    item["function_ids"] = json.loads(item.pop("function_ids_json"))
-    item["role_ids"] = json.loads(item.pop("role_ids_json"))
+    item["specification_ids"] = json.loads(item.pop("function_ids_json"))
+    item["responsibility_ids"] = json.loads(item.pop("role_ids_json"))
+    return item
+
+
+def _normalize_implementation_link(item: dict[str, Any]) -> dict[str, Any]:
+    if "responsibility_id" not in item and "role_id" in item:
+        item = dict(item)
+        item["responsibility_id"] = item.pop("role_id")
+        if item.get("kind") == "presents":
+            item["kind"] = "supports"
+        item.setdefault("symbol", "")
     return item
 
 
 def _mapping_revision(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
-    item["trace_links"] = json.loads(item.pop("trace_links_json"))
+    links = [_normalize_implementation_link(value) for value in json.loads(item.pop("trace_links_json"))]
+    item["implementation_links"] = links
+    return item
+
+
+def _finding(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["responsibility_ids"] = json.loads(item.pop("role_ids_json"))
+    item["artifact_paths"] = json.loads(item.pop("artifact_paths_json"))
+    item["evidence"] = json.loads(item.pop("evidence_json"))
     return item
 
 
@@ -853,6 +936,18 @@ def _select_hierarchy(items: list[Any], root_id: str | None, depth: int) -> list
     return [item for item in items if item.id in selected]
 
 
+def _reachable(entries: list[str], edges: list[Any]) -> set[str]:
+    outgoing: dict[str, set[str]] = {}
+    for edge in edges:
+        outgoing.setdefault(edge.source_node_id, set()).add(edge.target_node_id)
+    seen = set(entries)
+    frontier = set(entries)
+    while frontier:
+        frontier = {target for source in frontier for target in outgoing.get(source, set()) if target not in seen}
+        seen.update(frontier)
+    return seen
+
+
 def _atomic_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp-{uuid.uuid4().hex[:8]}")
@@ -860,18 +955,13 @@ def _atomic_json(path: Path, data: Any) -> None:
     temporary.replace(path)
 
 
-def _finding(row: sqlite3.Row) -> dict[str, Any]:
-    item = dict(row)
-    for source, target in (("role_ids_json", "role_ids"), ("artifact_paths_json", "artifact_paths"),
-                           ("evidence_json", "evidence")):
-        item[target] = json.loads(item.pop(source))
-    return item
-
-
 def _path_matches(mapping: str, path: str) -> bool:
     prefix = mapping.rstrip("/")
     return path == prefix or path.startswith(f"{prefix}/")
 
 
-def _architectural_source(path: str) -> bool:
-    return Path(path).suffix.lower() in {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs"}
+def _semantic_backend_source(path: str) -> bool:
+    lowered = path.lower()
+    if any(value in lowered for value in ("logging", "logger", "telemetry", "metrics", "tracing", "monitoring")):
+        return False
+    return Path(path).suffix.lower() in {".py", ".go", ".rs", ".java", ".kt", ".rb", ".php"}

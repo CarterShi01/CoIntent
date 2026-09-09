@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { fetchSession, listProjects, loadWorkspace, login, logout } from "./api";
 import type {
-  AlignmentBaseline, ChangeSet, DesignVersion, Finding, FunctionRoleLink, ModelResponse,
-  OverviewResponse, ProductFunction, Project, Proposal, Responsibility, RoleObject, RoleRelation, TraceLink,
+  AlignmentBaseline, ChangeSet, DesignVersion, Finding, ImplementationLink, ModelResponse,
+  OverviewResponse, Project, Proposal, Responsibility, SpecificationItem,
+  SpecificationResponsibilityLink, Workflow,
 } from "./types";
 
 type Workspace = {
@@ -16,19 +17,16 @@ type Workspace = {
   changeSets: ChangeSet[];
 };
 type Auth = { state: "checking" } | { state: "out" } | { state: "in"; user: string | null };
-type InspectorTab = "contract" | "functions" | "implementation" | "review";
 
-function App() {
+export default function App() {
   const [auth, setAuth] = useState<Auth>({ state: "checking" });
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [designVersion, setDesignVersion] = useState<number | undefined>();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [selectedFunction, setSelectedFunction] = useState("");
-  const [selectedRole, setSelectedRole] = useState("");
-  const [tab, setTab] = useState<InspectorTab>("contract");
+  const [path, setPath] = useState<string[]>([]);
+  const [selectedSpec, setSelectedSpec] = useState("");
   const [error, setError] = useState("");
-  const [mobileView, setMobileView] = useState<"functions" | "roles">("functions");
 
   useEffect(() => {
     fetchSession()
@@ -50,10 +48,9 @@ function App() {
     loadWorkspace(projectId, designVersion).then((next) => {
       setWorkspace(next);
       const model = next.model.model;
-      setSelectedFunction((current) => model.product_functions.some((item) => item.id === current)
-        ? current : firstLeaf(model.product_functions)?.id ?? model.product_functions[0]?.id ?? "");
-      setSelectedRole((current) => model.role_objects.some((item) => item.id === current)
-        ? current : model.role_objects.find((item) => item.parent_id)?.id ?? model.role_objects[0]?.id ?? "");
+      const root = rootResponsibilities(model.responsibilities)[0] ?? model.responsibilities[0];
+      setPath(root ? [root.id] : []);
+      setSelectedSpec(model.specification_items[0]?.id ?? "");
     }).catch(handleFailure);
   }, [auth.state, projectId, designVersion]);
 
@@ -68,172 +65,292 @@ function App() {
   if (auth.state === "out") return <LoginScreen onDone={(user) => setAuth({ state: "in", user })} />;
   if (!projectId || !workspace) return <Loading label="Opening the responsibility model…" />;
 
-  const { model: response, overview, versions, baseline, findings, proposals, changeSets } = workspace;
+  const response = workspace.model;
   const model = response.model;
-  const selected = model.role_objects.find((role) => role.id === selectedRole) ?? model.role_objects[0];
-  const functionLinks = model.function_role_links.filter((link) => link.function_id === selectedFunction);
-  const linkedRoleIds = new Set(functionLinks.map((link) => link.role_id));
-  const selectedRoleFunctionIds = new Set(model.function_role_links.filter((link) => link.role_id === selectedRole).map((link) => link.function_id));
-  const latestSnapshot = baseline.code_snapshot?.snapshot;
+  const responsibilityById = new Map(model.responsibilities.map((item) => [item.id, item]));
+  const roots = rootResponsibilities(model.responsibilities);
+  const current = responsibilityById.get(path[path.length - 1]) ?? roots[0] ?? model.responsibilities[0];
+  const currentPath = path.map((id) => responsibilityById.get(id)).filter(Boolean) as Responsibility[];
+  const evidence = model.implementation_links.filter((item) => item.responsibility_id === current?.id);
+  const relatedFindings = workspace.findings.filter((item) => item.responsibility_ids?.includes(current?.id ?? ""));
 
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand-block"><IntentMark /><div><strong>CoIntent</strong><span>shared design surface</span></div></div>
-        <label className="select-field"><span>Project</span><select value={projectId} onChange={(event) => { setDesignVersion(undefined); setProjectId(event.target.value); }}>
-          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+  function enterResponsibility(id: string) {
+    if (!responsibilityById.has(id)) return;
+    setPath((currentPathIds) => {
+      const repeatedAt = currentPathIds.lastIndexOf(id);
+      return repeatedAt >= 0 ? currentPathIds.slice(0, repeatedAt + 1) : [...currentPathIds, id];
+    });
+  }
+
+  function chooseSpecification(id: string) {
+    setSelectedSpec(id);
+    const links = model.specification_responsibility_links.filter((item) => item.specification_id === id);
+    const linked = links.find((item) => item.kind === "realizes") ?? links[0];
+    if (linked) setPath([linked.responsibility_id]);
+  }
+
+  return <div className="app-shell">
+    <header className="topbar">
+      <div className="brand"><IntentMark /><div><strong>CoIntent</strong><span>Program logic, made legible</span></div></div>
+      <label className="project-picker"><span>Project</span><select value={projectId} onChange={(event) => { setDesignVersion(undefined); setProjectId(event.target.value); }}>
+        {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+      </select></label>
+      <div className="model-coordinate">
+        <label><span>Design</span><select value={response.version} onChange={(event) => setDesignVersion(Number(event.target.value))}>
+          {workspace.versions.map((version) => <option key={version.version} value={version.version}>v{version.version} · {version.message}</option>)}
         </select></label>
-        <div className="coordinate-strip">
-          <label className="coordinate design-coordinate"><span>Design</span><select value={response.version} onChange={(event) => setDesignVersion(Number(event.target.value))}>
-            {versions.map((version) => <option key={version.version} value={version.version}>v{version.version} · {version.message}</option>)}
-          </select></label>
-          <div className="alignment-knot" title="Design-to-code alignment coordinate">↔</div>
-          <div className="coordinate"><span>Code</span><strong>{latestSnapshot?.revision.slice(0, 8) ?? "No snapshot"}</strong></div>
-          <div className={`coordinate ${baseline.is_current ? "" : "stale-coordinate"}`}><span>Mapping</span><strong>{baseline.mapping_revision ? `${baseline.mapping_revision.id.replace("mapping-", "")} · ${baseline.is_current ? "current" : "stale"}` : "None"}</strong></div>
-          <div className={`review-count ${overview.counts.open_findings ? "attention" : ""}`}><span>Review</span><strong>{overview.counts.open_findings + overview.counts.pending_proposals}</strong></div>
-        </div>
-        <button className="session-button" onClick={() => void logout().finally(() => { setWorkspace(null); setAuth({ state: "out" }); })}>
-          {auth.user ?? "user"}<span>Sign out</span>
-        </button>
-      </header>
+        <i aria-hidden="true">↔</i>
+        <div><span>Code</span><strong>{workspace.baseline.code_snapshot?.snapshot.revision.slice(0, 8) ?? "No snapshot"}</strong></div>
+        <div className={workspace.baseline.is_current ? "aligned" : "drifted"}><span>Alignment</span><strong>{workspace.baseline.is_current ? "Current" : "Review needed"}</strong></div>
+      </div>
+      <button className="account" onClick={() => void logout().finally(() => { setWorkspace(null); setAuth({ state: "out" }); })}>
+        <span>{auth.user ?? "user"}</span><small>Sign out</small>
+      </button>
+    </header>
 
-      <nav className="mobile-tabs" aria-label="Workspace view">
-        <button className={mobileView === "functions" ? "active" : ""} onClick={() => setMobileView("functions")}>Product functions</button>
-        <button className={mobileView === "roles" ? "active" : ""} onClick={() => setMobileView("roles")}>RoleObjects</button>
-      </nav>
+    <main className="workspace">
+      <SpecificationPanel
+        items={model.specification_items}
+        links={model.specification_responsibility_links}
+        selected={selectedSpec}
+        onSelect={chooseSpecification}
+        summary={model.summary}
+      />
 
-      <main className="workspace">
-        <section className={`function-pane ${mobileView === "functions" ? "mobile-active" : ""}`}>
-          <div className="pane-title"><div><span className="eyebrow">Product promise</span><h1>Function catalog</h1></div><span className="count-stamp">{model.product_functions.length} functions</span></div>
-          <p className="model-summary">{model.summary}</p>
-          <div className="catalog-rule"><span>Function</span><span>Owner coverage</span></div>
-          <FunctionTree
-            functions={model.product_functions}
-            links={model.function_role_links}
-            selected={selectedFunction}
-            roleHighlights={selectedRoleFunctionIds}
-            onSelect={(id) => {
-              setSelectedFunction(id);
-              const owner = model.function_role_links.find((link) => link.function_id === id && link.kind === "owns")
-                ?? model.function_role_links.find((link) => link.function_id === id);
-              if (owner) setSelectedRole(owner.role_id);
-            }}
-          />
-          <FunctionCard item={model.product_functions.find((item) => item.id === selectedFunction)} links={functionLinks} roles={model.role_objects} onRole={setSelectedRole} />
-        </section>
-
-        <section className={`role-pane ${mobileView === "roles" ? "mobile-active" : ""}`}>
-          <div className="role-map-section">
-            <div className="pane-title map-title"><div><span className="eyebrow">Responsibility design</span><h1>RoleObject map</h1></div><div className="map-legend"><span className="containment-key" /> contains <span className="relation-key" /> collaboration</div></div>
-            <RoleGraph roles={model.role_objects} relations={model.role_relations} selected={selectedRole} highlighted={linkedRoleIds} onSelect={setSelectedRole} />
+      <section className="logic-pane">
+        <div className="logic-head">
+          <nav className="breadcrumbs" aria-label="Responsibility path">
+            {currentPath.map((item, index) => <span key={`${item.id}-${index}`}>
+              {index > 0 && <i>›</i>}
+              <button onClick={() => setPath(path.slice(0, index + 1))}>{item.name}</button>
+            </span>)}
+          </nav>
+          <div className="logic-title">
+            <div><span className="eyebrow">Current responsibility</span><h1>{current?.name ?? "No responsibility"}</h1></div>
+            <div className="root-switcher" aria-label="Root responsibilities">
+              <span>System roots</span>
+              {roots.map((root) => <button key={root.id} className={path[0] === root.id ? "active" : ""} onClick={() => setPath([root.id])}>{root.name}</button>)}
+            </div>
           </div>
-          <RoleInspector
-            role={selected}
-            functions={model.product_functions}
-            responsibilities={model.responsibilities.filter((item) => item.role_id === selected?.id)}
-            links={model.function_role_links.filter((item) => item.role_id === selected?.id)}
-            relations={model.role_relations.filter((item) => selected && (item.source_role_id === selected.id || item.target_role_id === selected.id))}
-            roles={model.role_objects}
-            traces={model.trace_links.filter((item) => item.role_id === selected?.id)}
-            findings={findings.filter((item) => selected && item.role_ids.includes(selected.id))}
-            proposals={proposals}
-            changeSets={changeSets.filter((item) => selected && (item.role_ids.includes(selected.id) || item.function_ids.some((id) => selectedRoleFunctionIds.has(id))))}
-            tab={tab} onTab={setTab} onFunction={setSelectedFunction} onRole={setSelectedRole}
-          />
-        </section>
-      </main>
+          <p className="responsibility-description">{current?.description}</p>
+          <div className="scope-note"><span>Inside this object</span><strong>{current?.workflow?.nodes.length ?? 0} delegated responsibilities</strong><small>Choose a node to descend one semantic level.</small></div>
+        </div>
+        {current?.workflow
+          ? <WorkflowCanvas workflow={current.workflow} responsibilities={responsibilityById} activePathIds={new Set(path)} onEnter={enterResponsibility} />
+          : <LeafResponsibility responsibility={current} evidence={evidence} />}
+      </section>
+
+      <Inspector
+        responsibility={current}
+        evidence={evidence}
+        findings={relatedFindings}
+        proposals={workspace.proposals}
+        changeSets={workspace.changeSets}
+        baseline={workspace.baseline}
+      />
+    </main>
+  </div>;
+}
+
+function SpecificationPanel({ items, links, selected, onSelect, summary }: {
+  items: SpecificationItem[];
+  links: SpecificationResponsibilityLink[];
+  selected: string;
+  onSelect: (id: string) => void;
+  summary: string;
+}) {
+  const children = useMemo(() => hierarchy(items), [items]);
+  const render = (parentId: string | null, depth = 0): ReactNode => (children.get(parentId) ?? []).map((item) => {
+    const mapped = links.filter((link) => link.specification_id === item.id).length;
+    const hasChildren = (children.get(item.id)?.length ?? 0) > 0;
+    return <div className="spec-branch" key={item.id}>
+      <button className={`spec-row ${selected === item.id ? "selected" : ""}`} style={{ "--depth": depth } as CSSProperties} onClick={() => onSelect(item.id)}>
+        <span className="tree-mark">{hasChildren ? "◇" : "·"}</span>
+        <span><strong>{item.name}</strong><small>{item.description}</small></span>
+        <em title={`${mapped} responsibility mappings`}>{mapped}</em>
+      </button>
+      {render(item.id, depth + 1)}
+    </div>;
+  });
+  return <aside className="spec-pane">
+    <div className="pane-heading"><span className="eyebrow">Meaning / product view</span><h2>Specification</h2><p>{summary}</p></div>
+    <div className="spec-columns"><span>Plain-language capability</span><span>Map</span></div>
+    <div className="spec-tree">{render(null)}</div>
+    <div className="progression">
+      <span>Three levels of truth</span>
+      <ol><li className="active">Specification</li><li>Responsibility model</li><li>Code evidence</li></ol>
     </div>
-  );
+  </aside>;
+}
+
+type PositionedNode = { id: string; responsibility_id: string; note: string; x: number; y: number; depth: number };
+
+function WorkflowCanvas({ workflow, responsibilities, activePathIds, onEnter }: {
+  workflow: Workflow;
+  responsibilities: Map<string, Responsibility>;
+  activePathIds: Set<string>;
+  onEnter: (id: string) => void;
+}) {
+  const layout = useMemo(() => layoutWorkflow(workflow), [workflow]);
+  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  return <div className="workflow-region">
+    <div className="workflow-toolbar">
+      <div><span className="eyebrow">Responsibility workflow</span><strong>How this object delegates its work</strong></div>
+      <div className="legend"><span><i className="line normal" />forward</span><span><i className="line loop" />loop / return</span></div>
+    </div>
+    <div className="workflow-scroll">
+      <div className="workflow-canvas" style={{ width: layout.width, height: layout.height }}>
+        <svg width={layout.width} height={layout.height} aria-hidden="true">
+          <defs><marker id="flow-arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L0,8 L8,4 z" /></marker></defs>
+          {workflow.edges.map((edge, index) => {
+            const source = nodeById.get(edge.source_node_id);
+            const target = nodeById.get(edge.target_node_id);
+            if (!source || !target) return null;
+            const loop = target.depth <= source.depth;
+            const startX = source.x + 226;
+            const startY = source.y + 55;
+            const endX = target.x;
+            const endY = target.y + 55;
+            const bend = loop ? 54 + index * 7 : Math.max(42, (endX - startX) / 2);
+            const path = loop
+              ? `M${startX},${startY} C${startX + bend},${Math.max(16, startY - 118)} ${endX - bend},${Math.max(16, endY - 118)} ${endX},${endY}`
+              : `M${startX},${startY} C${startX + bend},${startY} ${endX - bend},${endY} ${endX},${endY}`;
+            return <g key={edge.id} className={loop ? "flow-edge loop-edge" : `flow-edge ${edge.kind}`}>
+              <path d={path} markerEnd="url(#flow-arrow)" />
+              {edge.label && <text x={(startX + endX) / 2} y={loop ? Math.max(25, Math.min(startY, endY) - 75 - index * 3) : (startY + endY) / 2 - 9}>{edge.label}</text>}
+            </g>;
+          })}
+        </svg>
+        {layout.nodes.map((node) => {
+          const item = responsibilities.get(node.responsibility_id);
+          const entry = workflow.entry_node_ids.includes(node.id);
+          const canDescend = Boolean(item?.workflow);
+          const recursive = activePathIds.has(node.responsibility_id);
+          return <button key={node.id} className="workflow-node" style={{ left: node.x, top: node.y }} onClick={() => onEnter(node.responsibility_id)}>
+            <span className="node-meta">{entry ? "ENTRY · " : ""}{recursive ? "RETURN" : canDescend ? "COMPOSITE" : "LEAF"}</span>
+            <strong>{item?.name ?? node.responsibility_id}</strong>
+            <p>{item?.description ?? node.note}</p>
+            <span className="enter-cue">{recursive ? "Return to this level" : canDescend ? "Open workflow" : "Inspect responsibility"}<b>→</b></span>
+          </button>;
+        })}
+      </div>
+    </div>
+  </div>;
+}
+
+function LeafResponsibility({ responsibility, evidence }: { responsibility?: Responsibility; evidence: ImplementationLink[] }) {
+  return <div className="leaf-stage">
+    <div className="leaf-symbol"><span /><i /><b /></div>
+    <span className="eyebrow">Atomic responsibility</span>
+    <h2>{responsibility?.name}</h2>
+    <p>This responsibility has no delegated workflow at the current modeling depth. Its contract and implementation evidence are still explicit.</p>
+    <div><strong>{evidence.length}</strong><span>mapped backend artifacts</span></div>
+  </div>;
+}
+
+function Inspector({ responsibility, evidence, findings, proposals, changeSets, baseline }: {
+  responsibility?: Responsibility;
+  evidence: ImplementationLink[];
+  findings: Finding[];
+  proposals: Proposal[];
+  changeSets: ChangeSet[];
+  baseline: AlignmentBaseline;
+}) {
+  const relatedChanges = changeSets.filter((item) => item.responsibility_ids?.includes(responsibility?.id ?? ""));
+  return <aside className="inspector">
+    <div className="inspector-heading"><span className="eyebrow">Object contract</span><h2>{responsibility?.name}</h2><code>{responsibility?.id}</code></div>
+    <section className="contract-block data-block"><h3>Data members</h3><ValueList values={responsibility?.data_members ?? []} empty="No persistent domain state declared." /></section>
+    <div className="io-grid">
+      <section className="contract-block"><h3>Inputs</h3><ValueList values={responsibility?.inputs ?? []} empty="No inputs declared." /></section>
+      <section className="contract-block"><h3>Outputs</h3><ValueList values={responsibility?.outputs ?? []} empty="No outputs declared." /></section>
+    </div>
+    <section className="evidence-block">
+      <div className="section-title"><div><span className="eyebrow">Implementation mapping</span><h3>Backend evidence</h3></div><strong>{evidence.length}</strong></div>
+      {evidence.length ? evidence.map((item) => <article className="evidence-row" key={item.id}>
+        <span>{item.kind}</span><code>{item.artifact_path}{item.symbol ? ` · ${item.symbol}` : ""}</code><p>{item.evidence}</p>
+      </article>) : <p className="empty">No backend code evidence mapped at this level.</p>}
+    </section>
+    <section className="review-block">
+      <div className="section-title"><div><span className="eyebrow">Human ↔ Agent</span><h3>Alignment review</h3></div><span className={`alignment-pill ${baseline.is_current ? "current" : "stale"}`}>{baseline.is_current ? "Current" : "Stale"}</span></div>
+      <div className="review-numbers">
+        <div><strong>{findings.length}</strong><span>findings here</span></div>
+        <div><strong>{proposals.filter((item) => item.status === "pending").length}</strong><span>proposals</span></div>
+        <div><strong>{relatedChanges.length}</strong><span>change sets</span></div>
+      </div>
+      {findings.slice(0, 3).map((item) => <article className="finding" key={item.id}><span>{item.severity} · {item.kind}</span><p>{item.summary}</p></article>)}
+    </section>
+  </aside>;
+}
+
+function ValueList({ values, empty }: { values: string[]; empty: string }) {
+  if (!values.length) return <p className="empty">{empty}</p>;
+  return <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul>;
+}
+
+function LoginScreen({ onDone }: { onDone: (user: string | null) => void }) {
+  const [user, setUser] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try { const result = await login(user, password); onDone(result.user); }
+    catch (reason) { setError(errorText(reason)); setBusy(false); }
+  }
+  return <main className="login-screen">
+    <section className="login-story"><div className="login-brand"><IntentMark /><strong>CoIntent</strong></div><div className="orbit" aria-hidden="true"><i /><i /><i /><i /></div><span className="eyebrow">Shared semantic ground</span><h1>See what the program actually does.</h1><p>Explore backend logic as recursive responsibilities and workflows—then keep that human-readable model aligned with the code.</p></section>
+    <section className="login-gate"><form onSubmit={(event) => void submit(event)}><span className="eyebrow">Private workspace</span><h2>Sign in</h2><p>Use the credentials assigned to this deployment.</p>
+      <label>Username<input autoComplete="username" autoFocus value={user} onChange={(event) => setUser(event.target.value)} /></label>
+      <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+      {error && <div className="login-error" role="alert">{error}</div>}
+      <button disabled={busy || !user || !password}>{busy ? "Checking…" : "Enter workspace"}<span>→</span></button>
+      <small>Session cookies are HTTP-only and SameSite strict.</small>
+    </form></section>
+  </main>;
 }
 
 function IntentMark() {
   return <svg className="intent-mark" viewBox="0 0 42 42" aria-hidden="true"><path d="M6 8h10l9 13 11 13M6 34h10l9-13L36 8" /><circle cx="6" cy="8" r="3" /><circle cx="6" cy="34" r="3" /><circle cx="25" cy="21" r="3.5" /><circle cx="36" cy="8" r="3" /><circle cx="36" cy="34" r="3" /></svg>;
 }
 
-function FunctionTree({ functions, links, selected, roleHighlights, onSelect }: { functions: ProductFunction[]; links: FunctionRoleLink[]; selected: string; roleHighlights: Set<string>; onSelect: (id: string) => void }) {
-  const children = useMemo(() => hierarchy(functions), [functions]);
-  const coverage = useMemo(() => new Map(functions.map((item) => [item.id, links.filter((link) => link.function_id === item.id)])), [functions, links]);
-  const render = (parent: string | null, depth: number): ReactNode => (children.get(parent) ?? []).map((item) => {
-    const itemLinks = coverage.get(item.id) ?? [];
-    return <div key={item.id} className="function-branch">
-      <button className={`function-row ${selected === item.id ? "selected" : ""} ${roleHighlights.has(item.id) ? "role-linked" : ""}`} style={{ "--depth": depth } as CSSProperties} onClick={() => onSelect(item.id)}>
-        <span className="function-glyph">{(children.get(item.id)?.length ?? 0) > 0 ? "◇" : "·"}</span>
-        <span className="function-copy"><strong>{item.name}</strong><small>{item.priority !== "unset" ? item.priority : item.status}</small></span>
-        <span className={`coverage ${itemLinks.some((link) => link.kind === "owns") ? "owned" : itemLinks.length ? "linked" : "missing"}`}>{itemLinks.length}</span>
-      </button>
-      {render(item.id, depth + 1)}
-    </div>;
-  });
-  return <div className="function-tree">{render(null, 0)}</div>;
-}
-
-function FunctionCard({ item, links, roles, onRole }: { item?: ProductFunction; links: FunctionRoleLink[]; roles: RoleObject[]; onRole: (id: string) => void }) {
-  if (!item) return null;
-  return <article className="function-card">
-    <div className="card-overline"><span>Selected function</span><code>{item.id}</code></div>
-    <h2>{item.name}</h2><p>{item.description}</p>
-    {item.acceptance.length > 0 && <DetailList label="Acceptance" values={item.acceptance} />}
-    {item.constraints.length > 0 && <DetailList label="Constraints" values={item.constraints} />}
-    <div className="role-chips"><span>Responsibility links</span>{links.length ? links.map((link) => <button key={link.id} onClick={() => onRole(link.role_id)}><em>{link.kind}</em>{roles.find((role) => role.id === link.role_id)?.name ?? link.role_id}</button>) : <small>No RoleObject is linked yet.</small>}</div>
-  </article>;
-}
-
-type PositionedRole = RoleObject & { x: number; y: number; width: number; height: number; depth: number };
-
-function RoleGraph({ roles, relations, selected, highlighted, onSelect }: { roles: RoleObject[]; relations: RoleRelation[]; selected: string; highlighted: Set<string>; onSelect: (id: string) => void }) {
-  const positioned = useMemo<PositionedRole[]>(() => {
-    const depths = roleDepths(roles);
-    const columns = new Map<number, RoleObject[]>();
-    roles.forEach((role) => { const depth = depths.get(role.id) ?? 0; columns.set(depth, [...(columns.get(depth) ?? []), role]); });
-    const output: PositionedRole[] = [];
-    [...columns.entries()].sort(([a], [b]) => a - b).forEach(([depth, items]) => items.forEach((role, index) => output.push({ ...role, depth, x: 34 + depth * 254, y: 42 + index * 108, width: 205, height: 76 })));
-    return output;
-  }, [roles]);
-  const byId = new Map(positioned.map((role) => [role.id, role]));
-  const width = Math.max(760, ...positioned.map((role) => role.x + role.width + 40));
-  const height = Math.max(390, ...positioned.map((role) => role.y + role.height + 44));
-  return <div className="graph-frame"><div className="graph-canvas" style={{ width, height }}>
-    <svg width={width} height={height} aria-hidden="true"><defs><marker id="relation-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0L0 6L7 3z" /></marker></defs>
-      {positioned.filter((role) => role.parent_id).map((role) => { const parent = byId.get(role.parent_id!); if (!parent) return null; const active = selected === role.id || selected === parent.id; return <path key={`contains-${role.id}`} className={`containment-edge ${active ? "active" : ""}`} d={`M${parent.x + parent.width},${parent.y + parent.height / 2} C${parent.x + parent.width + 34},${parent.y + parent.height / 2} ${role.x - 34},${role.y + role.height / 2} ${role.x},${role.y + role.height / 2}`} />; })}
-      {relations.map((relation) => { const source = byId.get(relation.source_role_id); const target = byId.get(relation.target_role_id); if (!source || !target) return null; const active = selected === source.id || selected === target.id; return <path key={relation.id} className={`relation-edge ${active ? "active" : ""}`} markerEnd="url(#relation-arrow)" d={`M${source.x + source.width / 2},${source.y + source.height} C${source.x + source.width / 2},${source.y + source.height + 30} ${target.x + target.width / 2},${target.y - 30} ${target.x + target.width / 2},${target.y}`} />; })}
-    </svg>
-    {positioned.map((role) => <button key={role.id} className={`graph-node depth-${Math.min(role.depth, 2)} ${selected === role.id ? "selected" : ""} ${highlighted.has(role.id) ? "function-linked" : ""}`} style={{ left: role.x, top: role.y, width: role.width, minHeight: role.height }} onClick={() => onSelect(role.id)}><span>{role.parent_id ? "ROLEOBJECT" : "ROOT ROLE"}</span><strong>{role.name}</strong><p>{role.purpose}</p>{highlighted.has(role.id) && <i>linked function</i>}</button>)}
-  </div></div>;
-}
-
-function RoleInspector({ role, functions, responsibilities, links, relations, roles, traces, findings, proposals, changeSets, tab, onTab, onFunction, onRole }: {
-  role?: RoleObject; functions: ProductFunction[]; responsibilities: Responsibility[]; links: FunctionRoleLink[]; relations: RoleRelation[]; roles: RoleObject[]; traces: TraceLink[]; findings: Finding[]; proposals: Proposal[]; changeSets: ChangeSet[]; tab: InspectorTab; onTab: (tab: InspectorTab) => void; onFunction: (id: string) => void; onRole: (id: string) => void;
-}) {
-  if (!role) return <section className="inspector empty">Select a RoleObject to inspect its contract.</section>;
-  return <section className="inspector">
-    <header className="inspector-head"><div><span className="eyebrow">RoleObject detail</span><h2>{role.name}</h2><p>{role.purpose}</p></div><code>{role.id}</code></header>
-    <div className="inspector-tabs" role="tablist">{(["contract", "functions", "implementation", "review"] as InspectorTab[]).map((item) => <button key={item} role="tab" aria-selected={tab === item} className={tab === item ? "active" : ""} onClick={() => onTab(item)}>{item}<em>{item === "functions" ? links.length : item === "implementation" ? traces.length : item === "review" ? findings.length + proposals.length + changeSets.length : responsibilities.length}</em></button>)}</div>
-    <div className="inspector-body">
-      {tab === "contract" && <div className="detail-grid"><div className="detail-main"><h3>Responsibilities</h3>{responsibilities.length ? responsibilities.map((item, index) => <article className="responsibility" key={item.id}><span>{String(index + 1).padStart(2, "0")}</span><div><p>{item.statement}</p>{item.function_ids.length > 0 && <small>{item.function_ids.join(" · ")}</small>}</div></article>) : <Empty label="No owned responsibilities." />}</div><div className="contract-grid"><DetailList label="Owned knowledge" values={role.owns_knowledge} /><DetailList label="Inputs" values={role.inputs} /><DetailList label="Outputs" values={role.outputs} /><DetailList label="Constraints" values={role.constraints} /><div className="detail-list"><h3>Collaborators</h3>{relations.length ? relations.map((relation) => { const other = relation.source_role_id === role.id ? relation.target_role_id : relation.source_role_id; return <button className="relation-row" key={relation.id} onClick={() => onRole(other)}><em>{relation.kind}</em><span>{roles.find((item) => item.id === other)?.name ?? other}</span><small>{relation.label}</small></button>; }) : <Empty label="No explicit collaborators." />}</div></div></div>}
-      {tab === "functions" && <div className="record-list"><h3>Supported ProductFunctions</h3>{links.length ? links.map((link) => <button className="linked-record" key={link.id} onClick={() => onFunction(link.function_id)}><span className={`link-kind ${link.kind}`}>{link.kind}</span><strong>{functions.find((item) => item.id === link.function_id)?.name ?? link.function_id}</strong><small>{Math.round(link.confidence * 100)}% · {link.evidence}</small></button>) : <Empty label="This RoleObject is not linked to a ProductFunction." />}</div>}
-      {tab === "implementation" && <div className="record-list"><h3>Implementation evidence</h3>{traces.length ? traces.map((trace) => <article className="trace-record" key={trace.id}><span>{trace.kind}</span><code>{trace.artifact_path}</code><small>{trace.origin} · {Math.round(trace.confidence * 100)}% confidence</small><p>{trace.evidence}</p></article>) : <Empty label="No implementation evidence is mapped to this RoleObject." />}</div>}
-      {tab === "review" && <div className="review-grid"><ReviewSection title="Alignment findings" items={findings.map((item) => ({ id: item.id, kind: `${item.severity} · ${item.kind}`, title: item.summary }))} empty="No open findings touch this RoleObject." /><ReviewSection title="Design proposals" items={proposals.map((item) => ({ id: item.id, kind: `base v${item.base_version}`, title: item.rationale }))} empty="No pending design proposals." /><ReviewSection title="ChangeSets" items={changeSets.map((item) => ({ id: item.id, kind: item.status, title: item.title }))} empty="No active ChangeSet touches this RoleObject." /></div>}
-    </div>
-  </section>;
-}
-
-function DetailList({ label, values }: { label: string; values: string[] }) { return <div className="detail-list"><h3>{label}</h3>{values.length ? <ul>{values.map((value) => <li key={value}>{value}</li>)}</ul> : <Empty label="Not specified." />}</div>; }
-function Empty({ label }: { label: string }) { return <p className="empty-copy">{label}</p>; }
-function ReviewSection({ title, items, empty }: { title: string; items: { id: string; kind: string; title: string }[]; empty: string }) { return <section className="review-section"><h3>{title}<em>{items.length}</em></h3>{items.length ? items.map((item) => <article key={item.id}><span>{item.kind}</span><strong>{item.title}</strong><code>{item.id}</code></article>) : <Empty label={empty} />}</section>; }
-
-function LoginScreen({ onDone }: { onDone: (user: string) => void }) {
-  const [user, setUser] = useState("carter");
-  const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-  return <main className="login-screen"><section className="login-context"><div className="login-brand"><IntentMark /><span>CoIntent</span></div><div className="login-orbit" aria-hidden="true"><i /><i /><i /><i /></div><span className="eyebrow">Human intent / Agent implementation</span><h1>See the system<br />at responsibility scale.</h1><p>Product functions become RoleObjects. Implementation stays mapped, reviewable, and visibly separate from intent.</p></section><section className="login-gate"><form onSubmit={(event) => { event.preventDefault(); setBusy(true); setMessage(""); void login(user, password).then((result) => onDone(result.user)).catch((reason: unknown) => setMessage(errorText(reason).startsWith("429 ") ? "Too many attempts. Wait a few minutes and try again." : "The username or password is incorrect.")).finally(() => setBusy(false)); }}><span className="eyebrow">Protected workspace</span><h2>Open the design</h2><p>Human sessions and Agent MCP credentials remain independent.</p><label>Username<input name="username" autoComplete="username" value={user} onChange={(event) => setUser(event.target.value)} /></label><label>Password<input name="password" type="password" autoComplete="current-password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} /></label>{message && <div className="login-error" role="alert">{message}</div>}<button type="submit" disabled={busy || !user || !password}>{busy ? "Checking…" : "Open CoIntent"}<span>→</span></button><small>Signed session · HttpOnly · SameSite Strict</small></form></section></main>;
-}
-
-function Loading({ label }: { label: string }) { return <div className="state-screen"><IntentMark /><span>{label}</span></div>; }
-function Failure({ message }: { message: string }) { return <div className="state-screen failure"><IntentMark /><h1>The workspace could not open.</h1><p>{message}</p><button onClick={() => location.reload()}>Reload</button></div>; }
+function Loading({ label }: { label: string }) { return <div className="state-screen"><IntentMark /><h1>CoIntent</h1><p>{label}</p></div>; }
+function Failure({ message }: { message: string }) { return <div className="state-screen"><IntentMark /><h1>Could not open CoIntent</h1><p>{message}</p><button onClick={() => location.reload()}>Reload</button></div>; }
 function errorText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
-function hierarchy<T extends { parent_id: string | null }>(items: T[]) { const map = new Map<string | null, T[]>(); items.forEach((item) => map.set(item.parent_id, [...(map.get(item.parent_id) ?? []), item])); return map; }
-function firstLeaf(items: ProductFunction[]) { const parents = new Set(items.map((item) => item.parent_id).filter(Boolean)); return items.find((item) => !parents.has(item.id)); }
-function roleDepths(roles: RoleObject[]) { const byId = new Map(roles.map((role) => [role.id, role])); const result = new Map<string, number>(); const depth = (role: RoleObject): number => { if (result.has(role.id)) return result.get(role.id)!; const value = role.parent_id && byId.has(role.parent_id) ? depth(byId.get(role.parent_id)!) + 1 : 0; result.set(role.id, value); return value; }; roles.forEach(depth); return result; }
 
-export default App;
+function hierarchy(items: SpecificationItem[]) {
+  const result = new Map<string | null, SpecificationItem[]>();
+  items.forEach((item) => result.set(item.parent_id, [...(result.get(item.parent_id) ?? []), item]));
+  return result;
+}
+
+function rootResponsibilities(items: Responsibility[]) {
+  const referenced = new Set(items.flatMap((item) => item.workflow?.nodes.map((node) => node.responsibility_id) ?? []));
+  return items.filter((item) => !referenced.has(item.id));
+}
+
+function layoutWorkflow(workflow: Workflow) {
+  const depths = new Map<string, number>();
+  const queue = workflow.entry_node_ids.map((id) => ({ id, depth: 0 }));
+  let steps = 0;
+  while (queue.length && steps < workflow.nodes.length * 8) {
+    steps += 1;
+    const next = queue.shift()!;
+    if (depths.has(next.id)) continue;
+    depths.set(next.id, next.depth);
+    workflow.edges.filter((edge) => edge.source_node_id === next.id && !depths.has(edge.target_node_id))
+      .forEach((edge) => queue.push({ id: edge.target_node_id, depth: next.depth + 1 }));
+  }
+  const maxDepth = Math.max(0, ...depths.values());
+  workflow.nodes.forEach((node) => { if (!depths.has(node.id)) depths.set(node.id, maxDepth + 1); });
+  const groups = new Map<number, typeof workflow.nodes>();
+  workflow.nodes.forEach((node) => { const depth = depths.get(node.id) ?? 0; groups.set(depth, [...(groups.get(depth) ?? []), node]); });
+  const nodes: PositionedNode[] = [];
+  [...groups.entries()].sort(([a], [b]) => a - b).forEach(([depth, members]) => {
+    members.forEach((node, index) => nodes.push({ ...node, depth, x: 44 + depth * 294, y: 70 + index * 156 }));
+  });
+  return {
+    nodes,
+    width: Math.max(760, ...nodes.map((node) => node.x + 270)),
+    height: Math.max(410, ...nodes.map((node) => node.y + 150)),
+  };
+}
