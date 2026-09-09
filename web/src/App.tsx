@@ -25,6 +25,7 @@ export default function App() {
   const [designVersion, setDesignVersion] = useState<number | undefined>();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [path, setPath] = useState<string[]>([]);
+  const [forwardIds, setForwardIds] = useState<string[]>([]);
   const [selectedSpec, setSelectedSpec] = useState("");
   const [error, setError] = useState("");
 
@@ -50,6 +51,7 @@ export default function App() {
       const model = next.model.model;
       const root = rootResponsibilities(model.responsibilities)[0] ?? model.responsibilities[0];
       setPath(root ? [root.id] : []);
+      setForwardIds([]);
       setSelectedSpec(model.specification_items[0]?.id ?? "");
     }).catch(handleFailure);
   }, [auth.state, projectId, designVersion]);
@@ -76,6 +78,7 @@ export default function App() {
 
   function enterResponsibility(id: string) {
     if (!responsibilityById.has(id)) return;
+    setForwardIds([]);
     setPath((currentPathIds) => {
       const repeatedAt = currentPathIds.lastIndexOf(id);
       return repeatedAt >= 0 ? currentPathIds.slice(0, repeatedAt + 1) : [...currentPathIds, id];
@@ -86,7 +89,29 @@ export default function App() {
     setSelectedSpec(id);
     const links = model.specification_responsibility_links.filter((item) => item.specification_id === id);
     const linked = links.find((item) => item.kind === "realizes") ?? links[0];
-    if (linked) setPath([linked.responsibility_id]);
+    if (linked) {
+      setPath([linked.responsibility_id]);
+      setForwardIds([]);
+    }
+  }
+
+  function exitLevel() {
+    if (path.length <= 1) return;
+    setForwardIds([path[path.length - 1], ...forwardIds]);
+    setPath(path.slice(0, -1));
+  }
+
+  function goForward() {
+    const next = forwardIds[0];
+    if (!next) return;
+    setPath([...path, next]);
+    setForwardIds(forwardIds.slice(1));
+  }
+
+  function exitToRoot() {
+    if (path.length <= 1) return;
+    setForwardIds(path.slice(1));
+    setPath(path.slice(0, 1));
   }
 
   return <div className="app-shell">
@@ -122,14 +147,16 @@ export default function App() {
           <nav className="breadcrumbs" aria-label="Responsibility path">
             {currentPath.map((item, index) => <span key={`${item.id}-${index}`}>
               {index > 0 && <i>›</i>}
-              <button onClick={() => setPath(path.slice(0, index + 1))}>{item.name}</button>
+              <button onClick={() => { setForwardIds(path.slice(index + 1)); setPath(path.slice(0, index + 1)); }}>{item.name}</button>
             </span>)}
           </nav>
           <div className="logic-title">
             <div><span className="eyebrow">Current responsibility</span><h1>{current?.name ?? "No responsibility"}</h1></div>
-            <div className="root-switcher" aria-label="Root responsibilities">
-              <span>System roots</span>
-              {roots.map((root) => <button key={root.id} className={path[0] === root.id ? "active" : ""} onClick={() => setPath([root.id])}>{root.name}</button>)}
+            <div className="workflow-navigation" aria-label="Workflow navigation">
+              <span>Workflow navigation</span>
+              <button disabled={path.length <= 1} onClick={exitLevel}><b>←</b> Exit level</button>
+              <button disabled={!forwardIds.length} onClick={goForward}>Forward <b>→</b></button>
+              <button disabled={path.length <= 1} onClick={exitToRoot}><b>⌂</b> Root</button>
             </div>
           </div>
           <p className="responsibility-description">{current?.description}</p>
@@ -226,12 +253,15 @@ function WorkflowCanvas({ workflow, responsibilities, activePathIds, onEnter }: 
           const entry = workflow.entry_node_ids.includes(node.id);
           const canDescend = Boolean(item?.workflow);
           const recursive = activePathIds.has(node.responsibility_id);
-          return <button key={node.id} className="workflow-node" style={{ left: node.x, top: node.y }} onClick={() => onEnter(node.responsibility_id)}>
+          const content = <>
             <span className="node-meta">{entry ? "ENTRY · " : ""}{recursive ? "RETURN" : canDescend ? "COMPOSITE" : "LEAF"}</span>
             <strong>{item?.name ?? node.responsibility_id}</strong>
             <p>{item?.description ?? node.note}</p>
-            <span className="enter-cue">{recursive ? "Return to this level" : canDescend ? "Open workflow" : "Inspect responsibility"}<b>→</b></span>
-          </button>;
+            <span className="enter-cue">{recursive ? "Return to this level" : canDescend ? "Open workflow" : "Leaf responsibility"}<b>{canDescend || recursive ? "→" : "◆"}</b></span>
+          </>;
+          return canDescend || recursive
+            ? <button key={node.id} className="workflow-node" style={{ left: node.x, top: node.y }} onClick={() => onEnter(node.responsibility_id)}>{content}</button>
+            : <article key={node.id} className="workflow-node leaf-node" style={{ left: node.x, top: node.y }} aria-label={`${item?.name ?? node.responsibility_id}, leaf responsibility`}>{content}</article>;
         })}
       </div>
     </div>
