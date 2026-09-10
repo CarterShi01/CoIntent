@@ -456,10 +456,10 @@ export default function App() {
         </span>}
       </div>
     </nav>}
-    {!(mode === "understand" && understandSubview === "implementation") && <nav className={`mobile-pane-tabs ${mode}`} aria-label="Workspace area">
+    {!(mode === "understand" && understandSubview === "implementation") && <nav className={`mobile-pane-tabs ${mode}${mode === "design" && !targetDesign ? " two-pane" : ""}`} aria-label="Workspace area">
       <button className={mobilePane === "functions" ? "active" : ""} onClick={() => setMobilePane("functions")}>{mode === "understand" ? "Functions" : "Expected"}</button>
       <button className={mobilePane === "structure" ? "active" : ""} onClick={() => setMobilePane("structure")}>Structure</button>
-      <button className={mobilePane === "details" ? "active" : ""} onClick={() => setMobilePane("details")}>{mode === "understand" ? "Evidence" : "Details"}</button>
+      {(mode === "understand" || targetDesign) && <button className={mobilePane === "details" ? "active" : ""} onClick={() => setMobilePane("details")}>{mode === "understand" ? "Evidence" : "Details"}</button>}
     </nav>}
 
     {mode === "understand" && understandSubview === "implementation" ? <UaImplementationMap
@@ -489,20 +489,76 @@ export default function App() {
           onStartNew={() => void startTargetDesign()}
           onViewBaseline={(revisionId, nodeId) => void openBaselineImplementation(revisionId, nodeId)}
         />
-      : <TargetDesignEmpty
+      : <TargetDesignBaseline
+          workspace={workspace}
+          observation={observation}
+          mobilePane={mobilePane}
           canStart={Boolean(projectState?.allowed_next_actions.includes("start_structure_design"))}
           onCreate={() => void startTargetDesign()}
         />}
   </div>;
 }
 
-function TargetDesignEmpty({ canStart, onCreate }: { canStart: boolean; onCreate: () => void }) {
-  return <main className="target-design-empty">
-    <section>
-      <span className="empty-kicker">Independent target space</span>
-      <h1>Design what should exist next.</h1>
-      <p>The target starts as a value clone of one named current-system revision. From then on it advances through its own immutable <code>des-*</code> revisions; changing it never changes the code-derived view.</p>
-      <button disabled={!canStart} onClick={onCreate}>{canStart ? "Start from the scanned baseline" : "Ask your Agent to update understanding"}<b>→</b></button>
+function TargetDesignBaseline({ workspace, observation, mobilePane, canStart, onCreate }: {
+  workspace: Workspace | null;
+  observation?: ObservationCoordinate;
+  mobilePane: "functions" | "structure" | "details";
+  canStart: boolean;
+  onCreate: () => void;
+}) {
+  const model = workspace?.model.model;
+  const revision = observation?.observed_revision;
+  const byId = useMemo(
+    () => new Map((revision?.responsibilities ?? []).map((item) => [item.id, item])),
+    [revision],
+  );
+  const roots = useMemo(() => rootResponsibilities(revision?.responsibilities ?? []), [revision]);
+  const [selectedRoot, setSelectedRoot] = useState("");
+
+  useEffect(() => {
+    setSelectedRoot((current) => current && byId.has(current) ? current : roots[0]?.id ?? "");
+  }, [revision?.id, byId, roots]);
+
+  const current = byId.get(selectedRoot) ?? roots[0];
+  const intents = model?.specification_items ?? [];
+
+  return <main className="target-design-baseline design-workspace" data-mobile-pane={mobilePane}>
+    <aside className="baseline-intent-pane">
+      <div className="baseline-pane-heading">
+        <span className="eyebrow">Latest user intent</span>
+        <h1>What you most recently asked the system to be</h1>
+        <p>This is the latest recorded intent layer. It remains separate from the code-derived structure on the right.</p>
+      </div>
+      <div className="baseline-coordinate">
+        <span>Intent version</span>
+        <strong>{workspace ? `v${workspace.model.version}` : "Loading"}</strong>
+        <small>{workspace?.model.message ?? "Reading the latest intent…"}</small>
+      </div>
+      <div className="baseline-intent-list">{intents.length ? intents.map((item) => <article key={item.id}>
+        <span>{item.status}</span>
+        <h2>{item.name}</h2>
+        <p>{item.description}</p>
+      </article>) : <div className="baseline-empty-copy"><strong>No recorded intent yet</strong><p>Ask your Agent to capture the product intent before starting a target design.</p></div>}</div>
+      <div className="baseline-start-design">
+        <span>Explicit design boundary</span>
+        <p>Starting creates a separate, human-owned target graph from this named observed revision. It never edits current truth.</p>
+        <button disabled={!canStart} onClick={onCreate}>{canStart ? "Start target design from this baseline" : "Ask your Agent to update understanding"}<b>→</b></button>
+      </div>
+    </aside>
+
+    <section className="baseline-structure-pane">
+      <header>
+        <div><span className="eyebrow">Current structure · read only</span><h1>{current?.name ?? "No scanned structure yet"}</h1></div>
+        <span className="baseline-truth-seal">Code-derived<br /><b>{revision ? "Current baseline" : "Awaiting scan"}</b></span>
+      </header>
+      {revision ? <>
+        <div className="baseline-revision-line"><span>Observation</span><code>{revision.id}</code><span>Code</span><code>{observation?.code_snapshot?.revision.slice(0, 12)}</code></div>
+        {roots.length > 0 && <nav className="baseline-root-switcher" aria-label="Current structure roots">{roots.map((item) => <button key={item.id} className={item.id === current?.id ? "active" : ""} onClick={() => setSelectedRoot(item.id)}>{item.name}</button>)}</nav>}
+        <p className="responsibility-description">{current?.description}</p>
+        {current?.workflow
+          ? <WorkflowCanvas workflow={current.workflow} responsibilities={byId} activePathIds={new Set([current.id])} onEnter={setSelectedRoot} allowLeafSelection />
+          : <div className="leaf-stage baseline-leaf"><div className="leaf-symbol"><span /><i /><b /></div><span className="eyebrow">Current leaf</span><h2>{current?.name}</h2><p>This Responsibility is atomic at the current scanned evidence depth.</p></div>}
+      </> : <div className="baseline-no-observation"><IntentMark /><span>Current truth is not generated</span><h2>Ask your Agent to update understanding.</h2><p>The right side will populate only after code → UA → Observation completes. A design draft can never fill this space.</p></div>}
     </section>
   </main>;
 }
