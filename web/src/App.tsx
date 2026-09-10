@@ -11,7 +11,7 @@ import type {
   AlignmentBaseline, ChangeSet, DesignVersion, Finding, ImplementationLink, ModelResponse,
   ImplementationContextResult, ImplementationRef, ObservationCoordinate, OverviewResponse, Project,
   Proposal, Responsibility, SpecificationItem, SpecificationResponsibilityLink, TargetDesignOperation,
-  ProjectState, StructureDesignDiff, TargetDesignView, UaSemanticSubject, UaViewerSession,
+  StructureDesignDiff, TargetDesignView, UaSemanticSubject, UaViewerSession,
   UnderstandingRefreshJob, Workflow,
 } from "./types";
 
@@ -42,7 +42,6 @@ export default function App() {
     new URLSearchParams(location.search).get("view") === "implementation" ? "implementation" : "system");
   const [routeKey, setRouteKey] = useState(0);
   const [refreshJob, setRefreshJob] = useState<UnderstandingRefreshJob | null>(null);
-  const [projectState, setProjectState] = useState<ProjectState | null>(null);
   const [viewerSession, setViewerSession] = useState<UaViewerSession | null>(null);
   const [viewerFocus, setViewerFocus] = useState<ImplementationRef | null>(null);
   const [viewerOriginId, setViewerOriginId] = useState("");
@@ -86,7 +85,6 @@ export default function App() {
     setWorkspace(null);
     setObservation(undefined);
     setTargetDesign(undefined);
-    setProjectState(null);
     setRefreshJob(null);
     setViewerSession(null);
     setViewerFocus(null);
@@ -108,7 +106,6 @@ export default function App() {
       setForwardIds([]);
       setSelectedSpec(model.specification_items[0]?.id ?? "");
       fetchProjectState(projectId).then((state) => {
-        setProjectState(state);
         setRefreshJob(state.latest_refresh);
       }).catch((reason: unknown) => {
         if (errorText(reason).startsWith("401 ")) setAuth({ state: "out" });
@@ -141,7 +138,7 @@ export default function App() {
           setSelectedObserved(observed.observed_revision?.capabilities[0]?.responsibility_id
             ?? observed.observed_revision?.responsibilities[0]?.id ?? "");
           setViewerSession(null);
-          setProjectState(await fetchProjectState(projectId));
+          setRefreshJob((await fetchProjectState(projectId)).latest_refresh);
         }
       }).catch(handleFailure);
     }, 1800);
@@ -344,7 +341,7 @@ export default function App() {
   async function startTargetDesign() {
     try {
       const baseline = observation?.observed_revision?.id;
-      if (!baseline || !projectState?.allowed_next_actions.includes("start_structure_design")) {
+      if (!baseline || observation?.status !== "current") {
         throw new Error("Ask your Agent to update understanding before starting a new design.");
       }
       await createTargetFromBaseline(baseline);
@@ -481,7 +478,7 @@ export default function App() {
           workspace={workspace}
           observation={observation}
           mobilePane={mobilePane}
-          canStart={Boolean(projectState?.allowed_next_actions.includes("start_structure_design"))}
+          canStart={Boolean(observation.observed_revision && observation.status === "current")}
           onCreate={() => void startTargetDesign()}
         />}
   </div>;
