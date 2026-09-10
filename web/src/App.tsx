@@ -143,27 +143,6 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [refreshJob?.id, refreshJob?.status, projectId]);
 
-  useEffect(() => {
-    if (auth.state !== "in" || !projectId) return;
-    const observe = () => {
-      if (document.visibilityState === "hidden") return;
-      fetchProjectState(projectId).then((state) => {
-        setProjectState(state);
-        setRefreshJob(state.latest_refresh);
-        const linkedRevision = new URLSearchParams(location.search).get("observed_revision");
-        if (!linkedRevision && state.observation.observed_revision?.id
-            !== observation?.observed_revision?.id) {
-          setObservation(state.observation);
-          setSelectedObserved(state.observation.observed_revision?.capabilities[0]?.responsibility_id
-            ?? state.observation.observed_revision?.responsibilities[0]?.id ?? "");
-          setViewerSession(null);
-        }
-      }).catch(handleFailure);
-    };
-    const timer = window.setInterval(observe, 3000);
-    return () => window.clearInterval(timer);
-  }, [auth.state, projectId, observation?.observed_revision?.id]);
-
   function handleFailure(reason: unknown) {
     const message = errorText(reason);
     if (message.startsWith("401 ")) setAuth({ state: "out" });
