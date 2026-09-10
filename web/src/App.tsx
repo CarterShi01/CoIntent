@@ -86,6 +86,8 @@ export default function App() {
     setWorkspace(null);
     setObservation(undefined);
     setTargetDesign(undefined);
+    setProjectState(null);
+    setRefreshJob(null);
     setViewerSession(null);
     setViewerFocus(null);
     const query = new URLSearchParams(location.search);
@@ -94,13 +96,10 @@ export default function App() {
       loadWorkspace(projectId, designVersion),
       fetchObservation(projectId, linkedRevision),
       fetchTargetDesignWorkspace(projectId),
-      fetchProjectState(projectId),
-    ]).then(([next, observed, target, state]) => {
+    ]).then(([next, observed, target]) => {
       setWorkspace(next);
       setObservation(observed);
       setTargetDesign(target);
-      setProjectState(state);
-      setRefreshJob(state.latest_refresh);
       setSelectedObserved(observed.observed_revision?.capabilities[0]?.responsibility_id
         ?? observed.observed_revision?.responsibilities[0]?.id ?? "");
       const model = next.model.model;
@@ -108,6 +107,12 @@ export default function App() {
       setPath(root ? [root.id] : []);
       setForwardIds([]);
       setSelectedSpec(model.specification_items[0]?.id ?? "");
+      fetchProjectState(projectId).then((state) => {
+        setProjectState(state);
+        setRefreshJob(state.latest_refresh);
+      }).catch((reason: unknown) => {
+        if (errorText(reason).startsWith("401 ")) setAuth({ state: "out" });
+      });
       if (query.get("view") === "implementation" && observed.observed_revision && observed.ua_snapshot) {
         const requestedUa = query.get("ua_snapshot");
         if (requestedUa && requestedUa !== observed.ua_snapshot.id) {
@@ -407,7 +412,11 @@ export default function App() {
         <div><span>Understand Anything</span><strong>{observation.ua_snapshot ? `graph ${observation.ua_snapshot.ua_graph_version}` : "Not imported"}</strong></div>
         <div className={observation.status === "current" ? "aligned" : "drifted"}><span>Current structure</span><strong>{observation.status === "current" ? "Read only · current" : observation.status === "stale" ? "Read only · stale" : "Not generated"}</strong></div>
       </div> : <div className="model-coordinate design-coordinate">
-        <div><span>Observed baseline</span><strong>{targetDesign?.workspace.base_observed_revision_id.slice(0, 18) ?? "Not created"}</strong></div>
+        <div><span>Observed baseline</span><strong>{
+          targetDesign?.workspace.base_observed_revision_id.slice(0, 18)
+          ?? observation.observed_revision?.id.slice(0, 18)
+          ?? "Update understanding first"
+        }</strong></div>
         <i aria-hidden="true">→</i>
         <div><span>Target revision</span><strong>{targetDesign?.revision.id.slice(0, 18) ?? "Start a workspace"}</strong></div>
         <div className="design-state"><span>Authority</span><strong>Human-owned target</strong></div>
