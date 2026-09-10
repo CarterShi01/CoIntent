@@ -16,14 +16,16 @@ from the same conversational Agent cannot cryptographically prove that no local 
 Every published current-system Observation is derived from a clean, committed, immutable coordinate:
 
 1. the project default branch and exact HEAD commit are declared before analysis;
-2. tracked modifications and non-ignored untracked files must be absent;
-3. analysis runs in a detached temporary worktree for that commit;
-4. `UNDERSTAND_NO_WORKTREE_REDIRECT=1` keeps UA on that worktree;
-5. the standard Git archive must carry the frozen commit in its PAX metadata and the derived source manifest
+2. common transport spellings of the registered Git origin, such as GitHub SSH and HTTPS URLs, are normalized to
+   one repository identity before comparison;
+3. tracked modifications and non-ignored untracked files must be absent;
+4. analysis runs in a detached temporary worktree for that commit;
+5. `UNDERSTAND_NO_WORKTREE_REDIRECT=1` keeps UA on that worktree;
+6. the standard Git archive must carry the frozen commit in its PAX metadata and the derived source manifest
    hashes every archived tracked file;
-6. UA graph commit, paths, line ranges, node/edge references, schema, and source digests are validated;
-7. semantic claims without resolvable structural source evidence are omitted and diagnosed;
-8. candidate publication is append-only and switches the current pointer only after complete projection succeeds.
+7. UA graph commit, paths, line ranges, node/edge references, schema, and source digests are validated;
+8. semantic claims without resolvable structural source evidence are omitted and diagnosed;
+9. candidate publication is append-only and switches the current pointer only after complete projection succeeds.
 
 V1 supports one active default-branch analysis lineage per CoIntent project. Git submodules, LFS pointers,
 tracked symbolic links, and archive-altering `export-ignore`/`export-subst` attributes are rejected before

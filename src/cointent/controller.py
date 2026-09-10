@@ -15,6 +15,7 @@ from .repository import CoIntentRepository
 from .remote_refresh import (
     ArtifactUploadSpec,
     NativeRefreshPreflight,
+    canonical_repository_identity,
     complete_native_refresh as complete_native_refresh_job,
     prepare_native_refresh as prepare_native_refresh_job,
     prepare_refresh_artifacts as prepare_refresh_artifact_uploads,
@@ -650,7 +651,13 @@ class RegisterProject(Tool):
             "name": name, "repository": repository,
             "default_branch": default_branch, "language": language,
         }
-        conflicts = [key for key, value in expected.items() if existing[key] != value]
+        conflicts = [
+            key for key, value in expected.items()
+            if (
+                canonical_repository_identity(existing[key]) != canonical_repository_identity(value)
+                if key == "repository" else existing[key] != value
+            )
+        ]
         if conflicts:
             raise ValueError(f"registered project differs in immutable onboarding fields: {conflicts!r}")
         return store.get_model(project_id)

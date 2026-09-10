@@ -11,6 +11,7 @@ from cointent.distribution import UA_REVISION, UA_VERSION
 from cointent.remote_refresh import (
     ArtifactUploadSpec,
     NativeRefreshPreflight,
+    canonical_repository_identity,
     complete_native_refresh,
     prepare_native_refresh,
     prepare_refresh_artifacts,
@@ -35,6 +36,13 @@ def preflight(revision: str) -> NativeRefreshPreflight:
         repository="git@example.test/demo.git", revision=revision, branch="master", clean=True,
         ua_version=UA_VERSION, ua_revision=UA_REVISION,
     )
+
+
+def test_repository_identity_normalizes_common_git_transports() -> None:
+    expected = "github.com/CarterShi01/idea-factory"
+    assert canonical_repository_identity("https://github.com/CarterShi01/idea-factory") == expected
+    assert canonical_repository_identity("git@github.com:CarterShi01/idea-factory.git") == expected
+    assert canonical_repository_identity("ssh://git@github.com/CarterShi01/idea-factory.git") == expected
 
 
 def make_bundles(root: Path, revision: str, content: str) -> tuple[Path, Path]:
@@ -271,6 +279,18 @@ def test_remote_refresh_rejects_dirty_wrong_branch_and_partial_state(tmp_path: P
     unsupported = preflight("a" * 40).model_copy(update={"submodules_present": True})
     with pytest.raises(ValueError, match="Git submodules"):
         prepare_native_refresh(repository, job["id"], unsupported)
+
+
+def test_remote_refresh_accepts_equivalent_registered_git_transport(tmp_path: Path) -> None:
+    repository = CoIntentRepository(tmp_path / "cointent.db", tmp_path / "assets")
+    registered = "https://github.com/CarterShi01/idea-factory"
+    repository.create_project("demo", "Demo", repository=registered, default_branch="master")
+    job = repository.request_understanding_refresh("demo", requested_by="agent")["job"]
+    ssh_preflight = preflight("a" * 40).model_copy(update={
+        "repository": "git@github.com:CarterShi01/idea-factory.git",
+    })
+    plan = prepare_native_refresh(repository, job["id"], ssh_preflight)
+    assert plan["job"]["repository_identity"] == registered
 
 
 def test_partial_native_state_fails_without_replacing_previous_observation(tmp_path: Path) -> None:

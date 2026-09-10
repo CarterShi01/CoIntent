@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,6 +26,31 @@ from .scanner import Artifact, RepositorySnapshot, snapshot_diff
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_EXPANDED_BYTES = int(os.environ.get("COINTENT_MAX_REFRESH_EXPANDED_BYTES", str(2 * 1024**3)))
 UA_TOOL_REVISION = f"Understand Anything {UA_VERSION}@{UA_REVISION}"
+
+
+def canonical_repository_identity(value: str) -> str:
+    """Normalize common Git transports without weakening repository ownership checks."""
+
+    raw = value.strip()
+    if not raw:
+        return raw
+    scp = re.fullmatch(r"(?:[^@/:]+@)?([^/:]+):(.+)", raw)
+    if scp and "://" not in raw:
+        host, path = scp.groups()
+        path = path.strip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        return f"{host.lower()}/{path}"
+    parsed = urlsplit(raw)
+    if parsed.scheme in {"http", "https", "ssh", "git"} and parsed.hostname:
+        host = parsed.hostname.lower()
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        path = parsed.path.strip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        return f"{host}/{path}"
+    return raw.rstrip("/")
 
 
 class NativeRefreshPreflight(BaseModel):
@@ -83,7 +109,9 @@ def prepare_native_refresh(repository: Any, job_id: str, preflight: NativeRefres
             return {"job": job.model_dump(mode="json"), "duplicate": True, "execution": None}
         raise ValueError("understanding refresh is not awaiting native execution")
     project = repository.get_project(job.project_id)
-    if project.get("repository") and preflight.repository != project["repository"]:
+    if project.get("repository") and canonical_repository_identity(
+        preflight.repository
+    ) != canonical_repository_identity(project["repository"]):
         raise ValueError("preflight repository identity does not match the registered project")
     if preflight.branch != project["default_branch"]:
         raise ValueError("V1 refresh must analyze the project's configured default branch")
@@ -111,7 +139,7 @@ def prepare_native_refresh(repository: Any, job_id: str, preflight: NativeRefres
     coordinate = repository.observation_coordinate(job.project_id)
     previous = coordinate.get("observed_revision")
     running = running.model_copy(update={
-        "repository_identity": preflight.repository,
+        "repository_identity": project.get("repository") or preflight.repository,
         "base_observed_revision_id": None if previous is None else previous["id"],
     })
     if previous is not None:
