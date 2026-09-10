@@ -9,6 +9,7 @@ from cointent.delivery import semantic_target_diff
 from cointent.design import DesignRevision
 from cointent.observation import ObservedModelRevision
 from cointent.repository import CoIntentRepository
+from cointent.refresh import UnderstandingRefreshJob
 from cointent.scanner import Artifact, RepositorySnapshot
 
 
@@ -42,6 +43,17 @@ def repository_with_observation(tmp_path: Path) -> tuple[CoIntentRepository, dic
         json.loads((FIXTURES / "knowledge-graph.json").read_text(encoding="utf-8")),
         json.loads((FIXTURES / "domain-graph.json").read_text(encoding="utf-8")),
     )
+    request = repository.request_understanding_refresh("demo", requested_by="test")
+    claimed = UnderstandingRefreshJob.model_validate(
+        repository.claim_understanding_refresh(request["job"]["id"])
+    )
+    repository.finish_understanding_refresh(claimed.model_copy(update={
+        "status": "completed", "mode": "full", "repository_revision": snapshot.revision,
+        "repository_branch": snapshot.branch, "code_snapshot_id": snapshot.id,
+        "ua_snapshot_id": imported["ua_snapshot"]["id"],
+        "observed_revision_id": imported["observed_revision"]["id"],
+        "completed_at": "2026-09-09T00:01:00+00:00", "duration_ms": 1,
+    }))
     return repository, imported["observed_revision"]
 
 
@@ -72,6 +84,16 @@ def test_observed_baseline_is_cloned_into_an_independent_design_namespace(tmp_pa
     target = tmp_path / "projects/demo/target-design" / workspace["id"]
     assert (target / "workspace.json").is_file()
     assert (target / "revisions" / f"{revision['id']}.json").is_file()
+
+
+def test_design_cannot_bypass_the_explicit_refresh_precondition(tmp_path: Path) -> None:
+    repository, observed = repository_with_observation(tmp_path)
+    newer = repository.request_understanding_refresh("demo", requested_by="test")
+    assert newer["job"]["status"] == "queued"
+    with pytest.raises(ValueError, match="explicitly completed understanding refresh"):
+        repository.create_design_workspace(
+            "demo", observed["id"], "Stale start", actor="human", rationale="Must be rejected.",
+        )
 
 
 def test_typed_operations_publish_a_new_revision_and_keep_an_audit_trail(tmp_path: Path) -> None:

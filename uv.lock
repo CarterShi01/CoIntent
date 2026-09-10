@@ -156,7 +156,7 @@ wheels = [
 
 [[package]]
 name = "cointent"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "contexture-mcp" },

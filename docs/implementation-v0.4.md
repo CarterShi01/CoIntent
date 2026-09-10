@@ -1,7 +1,7 @@
 # CoIntent 0.4 Execution Path
 
-**Status:** on-demand product loop and UA Dashboard integration implemented; production coverage review next
-**Decision baseline:** [design-v0.4](design-v0.4.md), [ADR-0001](adr-0001-codemap-engine.md)
+**Status:** native remote-UA execution and central checkpoint slice implemented; production compatibility/coverage review next
+**Decision baseline:** [design-v0.4](design-v0.4.md), [ADR-0001](adr-0001-codemap-engine.md), [ADR-0002](adr-0002-native-ua-distribution.md), [ADR-0003](adr-0003-mcp-control-and-artifact-data-plane.md), [ADR-0004](adr-0004-observation-provenance.md), [ADR-0005](adr-0005-central-ua-state.md)
 **Delivery rule:** ship one Understand Anything path first; introduce no generic analyzer framework.
 
 The current product-experience authority is [understand on demand, design on demand](on-demand-product-flow.md).
@@ -43,27 +43,34 @@ The current implementation also includes:
 
 - the compact public MCP Role graph and two orchestration Skills, with per-operation scopes and principal-derived
   authorship;
-- a queued, persistent trusted refresh worker with full/unchanged/incremental selection, declared fallback,
-  exact clean-Git worktrees, persistent UA state, pre-publication validation, and failure preservation;
+- a native-UA Distribution Role with exact upstream revision and prerequisite/reload verification;
+- a refresh lease protocol with clean default-branch preflight, explicit rejection of V1 source-tree forms that
+  standard Git archives cannot preserve, full/unchanged/incremental selection, central checkpoint download,
+  model-free streaming upload, safe archive extraction, Git archive coordinate checks, one-transaction
+  Observation publication, recoverable checkpoint caching, and failure preservation;
 - first-class `ImplementationRef` records with exact code/UA/Observation lineage, deterministic resolution,
   primary/supporting roles, and reverse lookup;
 - an authenticated HTTP-only viewer session protocol with short-lived tokens and exact content-addressed source;
 - a reproducible build of the official UA 2.9.6 Dashboard at the pinned commit, using a minimal same-origin
   data/focus bridge and no UA MCP server;
 - stable forward deep links and reverse navigation between System view and the implementation map;
-- a browser design journey of expected functions → complete target structure → reviewed semantic diff → exact
+- an Agent-only scan trigger with a status-observing, mutation-free Understand browser tab, plus a browser design
+  journey of expected functions → complete target structure → reviewed semantic diff → exact
   implementation context, with no post-coding scan or mandatory convergence stage.
 
-The remaining release work is deployment configuration of the trusted headless Agent command, review of a real
-Idea Factory UA projection, and production rollout. The operator import stays available as a recovery path.
+The remaining release work is a real native-UA Idea Factory acceptance run, the supported Agent/OS compatibility
+matrix, production TLS/storage/retention configuration, and rollout. The operator import stays available as a
+recovery path; no server-local checkout or headless Agent command is part of normal product use.
 
 ## 1. Target vertical loop
 
 ```text
 user asks to understand or starts design
-  → capture full Git snapshot
-  → run pinned Understand Anything outside the web request
-  → import and validate UA JSON
+  → code-local Agent freezes a clean detached Git worktree
+  → restore a compatible central UA checkpoint
+  → run official pinned Understand Anything Skills outside the web request
+  → MCP-authorized HTTPS transfer of opaque source/UA bundles
+  → import and validate the exact code/UA coordinate
   → publish immutable UA snapshot
   → project evidence-backed observed revision
   → browse current functions and recursive structure read-only
@@ -276,10 +283,11 @@ The browser uses authenticated HTTP and the conversational Agent uses CoIntent M
 from authenticated principals rather than caller-supplied actor fields, and both enforce the same aggregate
 boundaries.
 
-| Operation | Browser human (HTTP) | Agent (MCP) | Observation worker |
+| Operation | Browser human (HTTP) | Agent (MCP) | Validator/projector |
 |---|---:|---:|---:|
 | List projects and inspect state | yes | yes | read |
-| Request an idempotent refresh | yes | yes | run |
+| Request/coalesce an on-demand refresh | no | yes | validate state |
+| Stage refresh-scoped opaque artifacts | no | active lease only | verify digest |
 | Read one current/design level | yes | yes | read |
 | Publish UA or an observed revision | no API | no API | yes |
 | Insert/update/delete an observed node | no API | no API | no public API |
@@ -287,10 +295,11 @@ boundaries.
 | Finalize exact implementation context | yes | after explicit user instruction | no |
 | Compare a historical design with current | yes | yes | read inputs |
 
-The hidden worker accepts a trusted job coordinate and completed UA artifacts; it never accepts a replacement
-graph from a business client. Browser HTTP and public MCP methods accept identifiers, intent, and bounded
-navigation parameters, never native graph payloads. The directly embedded UA Dashboard receives only read-only
-artifact/source endpoints and exposes no Agent MCP Role.
+The code-local Agent can declare and transfer two opaque bundles only inside a clean coordinate-bound refresh.
+It cannot call a repository publisher or submit graph nodes/edges as mutations. Validator/projector code reads the
+staged artifacts and owns publication. Browser HTTP accepts identifiers, intent, and bounded navigation
+parameters, never native upload content. The directly embedded UA Dashboard receives only read-only artifact/source
+endpoints and exposes no Agent MCP Role.
 
 ## 6. Test fixtures
 
@@ -318,9 +327,10 @@ The project flag `observation_v04_enabled` remains false until Increment A passe
 - frontend empty, stale, partial, and current states pass;
 - existing 0.3 tests remain green.
 
-The on-demand runner additionally must prove that an unchanged repository skips UA and domain work, a changed
-repository with valid UA state uses incremental `/understand`, a missing or invalid cache reports a full
-fallback, starting design refreshes the baseline first, and coding completion schedules no work.
+The native refresh protocol additionally must prove that an unchanged repository skips UA and domain work, a
+changed repository with valid central UA state selects incremental `/understand`, a missing or invalid checkpoint
+reports a full fallback, partial uploads never publish, starting design refreshes the baseline first, and coding
+completion schedules no work.
 
 The UA Dashboard release gate is defined in [the integration design](ua-dashboard-integration.md): exact
 snapshot/source delivery, direct HTTP loading, forward/reverse ImplementationRef focus, and absence of UA MCP or

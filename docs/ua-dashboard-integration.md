@@ -587,7 +587,8 @@ bounded CoIntent evidence coordinates, but it does not need an MCP wrapper aroun
 
 1. Current truth still originates only from code → UA → validated CoIntent projection.
 2. UA Dashboard and its HTTP endpoints are read-only views of immutable stored artifacts.
-3. A user, browser, iframe, or Agent cannot upload or mutate native graph JSON.
+3. A user, browser, or iframe cannot upload or mutate native graph JSON. A code-local Agent may transfer an opaque
+   native bundle only inside an active coordinate-bound refresh; staging cannot publish or replace a graph.
 4. Graph issues trigger regeneration/reporting, never direct repair of observed truth.
 5. Refresh runs only when a user asks to understand or begins a new design.
 6. Unchanged code skips UA work; changed code uses UA incremental analysis when valid prior state exists.
@@ -602,7 +603,7 @@ bounded CoIntent evidence coordinates, but it does not need an MCP wrapper aroun
 
 | Condition | Product behavior |
 |---|---|
-| No valid UA snapshot | Implementation map shows **Update understanding first**. |
+| No valid UA snapshot | Implementation map says to ask the connected Agent to update understanding. |
 | Refresh running | Existing valid map remains visible with a stale/running badge; no partial artifact is mounted. |
 | UA import/projection failed | Last valid Observation remains visible as stale; failed artifacts cannot open as current. |
 | Viewer session expired | Host creates a new session for the same immutable coordinates and restores focus. |

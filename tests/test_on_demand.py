@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from cointent.refresh import UaRunResult, run_refresh_job
+from cointent.refresh import UaRunResult, UnderstandingRefreshJob
 from cointent.repository import CoIntentRepository
+from cointent.scanner import scan_repository
 
 
 def git(root: Path, *args: str) -> str:
@@ -65,70 +66,24 @@ def ua_result(project_root: Path, mode: str, state_root: Path) -> UaRunResult:
     )
 
 
-def test_refresh_is_full_then_zero_work_then_incremental(tmp_path: Path) -> None:
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    initialize_checkout(checkout)
-    repository = CoIntentRepository(tmp_path / "cointent.db", tmp_path / "projects")
-    repository.create_project("demo", "Demo")
-    repository.set_project_checkout("demo", checkout)
-    modes: list[str] = []
-
-    def run(project_root: Path, mode: str, state_root: Path) -> UaRunResult:
-        modes.append(mode)
-        return ua_result(project_root, mode, state_root)
-
-    first_request = repository.request_understanding_refresh("demo", requested_by="user")
-    first = run_refresh_job(repository, first_request["job"]["id"], ua_command=run)
-    assert first["mode"] == "full"
-    assert first["fallback_reason"] is None
-    assert first["observed_revision_id"]
-    assert modes == ["full"]
-
-    second_request = repository.request_understanding_refresh("demo", requested_by="user")
-    second = run_refresh_job(repository, second_request["job"]["id"], ua_command=run)
-    assert second["mode"] == "unchanged"
-    assert second["ua_files_reanalyzed"] == []
-    assert second["observed_revision_id"] == first["observed_revision_id"]
-    assert modes == ["full"]
-
-    (checkout / "service.py").write_text("def serve():\n    return 'changed'\n", encoding="utf-8")
-    git(checkout, "add", "service.py")
-    git(checkout, "commit", "-qm", "change")
-    third_request = repository.request_understanding_refresh("demo", requested_by="user")
-    third = run_refresh_job(repository, third_request["job"]["id"], ua_command=run)
-    assert third["mode"] == "incremental"
-    assert third["changed_files"] == ["service.py"]
-    assert third["ua_files_reanalyzed"] == ["service.py"]
-    assert modes == ["full", "incremental"]
-
-
-def test_corrupt_incremental_state_declares_full_fallback(tmp_path: Path) -> None:
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    initialize_checkout(checkout)
-    repository = CoIntentRepository(tmp_path / "cointent.db", tmp_path / "projects")
-    repository.create_project("demo", "Demo")
-    repository.set_project_checkout("demo", checkout)
-    first = repository.request_understanding_refresh("demo", requested_by="user")
-    run_refresh_job(repository, first["job"]["id"], ua_command=ua_result)
-
-    persistent = repository.asset_root / "demo" / "ua-runner-state"
-    (persistent / "fingerprints.json").write_text("{truncated", encoding="utf-8")
-    (checkout / "service.py").write_text("def serve():\n    return 'next'\n", encoding="utf-8")
-    git(checkout, "add", "service.py")
-    git(checkout, "commit", "-qm", "next")
-    modes: list[str] = []
-
-    def run(project_root: Path, mode: str, state_root: Path) -> UaRunResult:
-        modes.append(mode)
-        return ua_result(project_root, mode, state_root)
-
-    requested = repository.request_understanding_refresh("demo", requested_by="user")
-    completed = run_refresh_job(repository, requested["job"]["id"], ua_command=run)
-    assert modes == ["full"]
-    assert completed["mode"] == "full"
-    assert completed["fallback_reason"] == "missing_or_invalid_ua_state"
+def publish_observation(repository: CoIntentRepository, checkout: Path, job_id: str) -> dict:
+    claimed = UnderstandingRefreshJob.model_validate(repository.claim_understanding_refresh(job_id))
+    snapshot = scan_repository(checkout, claimed.project_id, scope="full")
+    repository.ingest_snapshot(claimed.project_id, snapshot.model_dump(mode="json"))
+    repository.store_snapshot_sources(snapshot, checkout)
+    generated = ua_result(checkout, "full", checkout / ".ua-test")
+    imported = repository.import_understand_anything(
+        claimed.project_id, snapshot.id, "test-UA@fixture",
+        generated.knowledge_graph, generated.domain_graph,
+    )
+    completed = claimed.model_copy(update={
+        "status": "completed", "mode": "full", "repository_revision": snapshot.revision,
+        "repository_branch": snapshot.branch, "code_snapshot_id": snapshot.id,
+        "ua_snapshot_id": imported["ua_snapshot"]["id"],
+        "observed_revision_id": imported["observed_revision"]["id"],
+        "completed_at": "2026-09-10T00:00:00Z", "duration_ms": 1,
+    })
+    return repository.finish_understanding_refresh(completed)
 
 
 def test_viewer_session_uses_exact_snapshot_source_and_reverse_mapping(tmp_path: Path) -> None:
@@ -137,9 +92,8 @@ def test_viewer_session_uses_exact_snapshot_source_and_reverse_mapping(tmp_path:
     initialize_checkout(checkout)
     repository = CoIntentRepository(tmp_path / "cointent.db", tmp_path / "projects")
     repository.create_project("demo", "Demo")
-    repository.set_project_checkout("demo", checkout)
     request = repository.request_understanding_refresh("demo", requested_by="user")
-    completed = run_refresh_job(repository, request["job"]["id"], ua_command=ua_result)
+    completed = publish_observation(repository, checkout, request["job"]["id"])
     observed = repository.get_observed_revision(completed["observed_revision_id"])
     assert observed["implementation_refs"]
     ref = observed["implementation_refs"][0]
@@ -170,9 +124,8 @@ def test_current_level_never_contains_grandchildren(tmp_path: Path) -> None:
     initialize_checkout(checkout)
     repository = CoIntentRepository(tmp_path / "cointent.db", tmp_path / "projects")
     repository.create_project("demo", "Demo")
-    repository.set_project_checkout("demo", checkout)
     request = repository.request_understanding_refresh("demo", requested_by="user")
-    completed = run_refresh_job(repository, request["job"]["id"], ua_command=ua_result)
+    completed = publish_observation(repository, checkout, request["job"]["id"])
     root = repository.read_current_level("demo")
     assert all("workflow" not in item for item in root["level"]["children"])
     focus_id = root["level"]["children"][0]["id"]
@@ -189,13 +142,12 @@ def test_design_requires_explicit_refresh_and_exact_reviewed_diff(tmp_path: Path
     initialize_checkout(checkout)
     repository = CoIntentRepository(tmp_path / "cointent.db", tmp_path / "projects")
     repository.create_project("demo", "Demo")
-    repository.set_project_checkout("demo", checkout)
 
     with pytest.raises(ValueError, match="update current understanding"):
         repository.start_structure_design("demo", "Next", actor="carter")
 
     requested = repository.request_understanding_refresh("demo", requested_by="carter")
-    completed = run_refresh_job(repository, requested["job"]["id"], ua_command=ua_result)
+    completed = publish_observation(repository, checkout, requested["job"]["id"])
     started = repository.start_structure_design("demo", "Next", actor="carter")
     assert started["revision"]["base_observed_revision_id"] == completed["observed_revision_id"]
     revision = started["revision"]

@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -18,9 +19,10 @@ def test_rest_surface_uses_contexture_runtime(tmp_path: Path, monkeypatch) -> No
         health = client.get("/api/health")
         model = client.get("/api/v1/model?project_id=idea-factory")
         observation = client.get("/api/v1/observation?project_id=idea-factory")
+        browser_scan = client.post("/api/v1/understanding-refreshes", json={"project_id": "idea-factory"})
 
     assert health.status_code == 200
-    assert health.json() == {"ok": True, "service": "cointent", "schema_version": "0.3", "projects": 1}
+    assert health.json() == {"ok": True, "service": "cointent", "schema_version": "0.4", "projects": 1}
     assert model.status_code == 200
     assert model.json()["model"]["project_id"] == "idea-factory"
     assert model.json()["model"]["schema_version"] == "0.3"
@@ -28,6 +30,7 @@ def test_rest_surface_uses_contexture_runtime(tmp_path: Path, monkeypatch) -> No
     assert observation.json() == {
         "project_id": "idea-factory", "status": "not_generated", "observed_revision": None,
     }
+    assert browser_scan.status_code == 404
 
 
 def test_streamable_http_mcp_requires_and_accepts_static_token(tmp_path: Path, monkeypatch) -> None:
@@ -58,6 +61,56 @@ def test_streamable_http_mcp_requires_and_accepts_static_token(tmp_path: Path, m
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
     assert '"serverInfo"' in authorized.text
+
+
+def test_refresh_artifact_uses_scoped_streaming_token_not_browser_or_model_payload(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    database = tmp_path / "model.db"
+    repository = CoIntentRepository(database)
+    repository.create_project("demo", "Demo")
+    job = repository.request_understanding_refresh("demo", requested_by="agent")["job"]
+    running = UnderstandingRefreshJob.model_validate(repository.claim_understanding_refresh(job["id"]))
+    payload = b"opaque-native-ua-archive"
+    transfer = repository.issue_refresh_transfer(
+        job["id"], kind="ua-state", direction="upload",
+        expected_digest=hashlib.sha256(payload).hexdigest(), expected_size=len(payload),
+    )
+    token_path = transfer["url"]
+    bad = repository.issue_refresh_transfer(
+        job["id"], kind="source-snapshot", direction="upload",
+        expected_digest="0" * 64, expected_size=len(payload),
+    )
+    checkpoint = tmp_path / "checkpoint.tar.gz"
+    checkpoint.write_bytes(payload)
+    download = repository.issue_refresh_transfer(
+        job["id"], kind="checkpoint", direction="download",
+        expected_digest=hashlib.sha256(payload).hexdigest(), expected_size=len(payload),
+        source_path=checkpoint,
+    )
+    repository.update_native_understanding_refresh(
+        running.model_copy(update={"status": "awaiting_upload"}), expected_status="running",
+    )
+    monkeypatch.setenv("COINTENT_DB_PATH", str(database))
+    monkeypatch.setenv("COINTENT_LOGIN_USER", "human")
+    monkeypatch.setenv("COINTENT_LOGIN_PASSWORD", "password")
+    monkeypatch.setenv("COINTENT_SESSION_SECRET", "session-secret")
+
+    with TestClient(build_http_app(), base_url="http://127.0.0.1:8811") as client:
+        uploaded = client.put(token_path, content=payload)
+        duplicate = client.put(token_path, content=payload)
+        rejected = client.put(bad["url"], content=payload)
+        downloaded = client.get(download["url"])
+
+    assert uploaded.status_code == 200
+    assert uploaded.json()["digest"] == hashlib.sha256(payload).hexdigest()
+    assert duplicate.json()["duplicate"] is True
+    assert rejected.status_code == 400
+    assert downloaded.status_code == 200
+    assert downloaded.content == payload
+    records = {item["kind"]: item for item in repository.list_refresh_transfers(job["id"])}
+    assert records["ua-state"]["status"] == "uploaded"
+    assert records["source-snapshot"]["status"] == "ready"
 
 
 def test_browser_can_request_and_open_a_generated_observation_refinement(tmp_path: Path, monkeypatch) -> None:

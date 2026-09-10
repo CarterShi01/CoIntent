@@ -638,7 +638,10 @@ Pinned Understand Anything ──→ knowledge-graph.json + domain-graph.json
           ObservedCapabilities / Manual
 ```
 
-Each transition runs as an idempotent job. Job identity is a digest of its input coordinate, pinned UA revision or projector version, and configuration. Repeated requests return the existing successful result unless `force_rebuild` is used by an operator, not an ordinary conversation Agent.
+Each transition runs as a leased job. Concurrent requests for the same project coalesce onto the active lease.
+After a job completes, a later explicit request creates a new audit record; preflight reuses the current
+Observation without invoking UA when the frozen commit is unchanged. Artifact identities remain content-derived
+from the project and complete code/UA coordinates.
 
 The pipeline is started only by `refresh-current-understanding`, normally because the user wants to understand
 the project or is about to start structural design. A full CodeSnapshot records the complete repository manifest,
@@ -654,7 +657,9 @@ For the first 0.4 implementation, retain SQLite transaction metadata and immutab
 ```text
 snapshots                         # existing physical CodeSnapshot table
 understand_anything_snapshots
-analysis_jobs
+understanding_refresh_jobs
+refresh_artifact_transfers
+ua_state_checkpoints
 observed_model_revisions
 observation_expansion_requests
 observed_feedback
@@ -688,7 +693,7 @@ Authority is enforced by capability boundaries, not Agent instructions alone:
 
 | Principal/capability | Request refresh | Publish observation | Read one level | Revise design | Finalize implementation context |
 |---|---:|---:|---:|---:|---:|
-| browser human (authenticated HTTP) | yes | no API | yes | yes | yes |
+| browser human (authenticated HTTP) | no | no API | yes | yes | yes |
 | Agent MCP principal | yes | no API | yes | scoped proposal | after explicit user instruction |
 | observation pipeline | execute | yes | read | no | no |
 
@@ -736,19 +741,32 @@ persisted aggregates. Exact contracts and Role instructions are normative in
 ### 7.1 Project context
 
 - `list-projects()`
+- `register-project(project_id, name, repository, default_branch, language)`
 - `inspect-project-state(project_id)`
 
-### 7.2 Understand current
+### 7.2 Distribution
+
+- `prepare-ua-installation(platform, operating_system)`
+- `verify-ua-installation(evidence)`
+
+Distribution preserves UA's native platform installation. It verifies the exact upstream unit and prerequisites;
+it does not compile UA Skills into CoIntent or execute commands on the MCP server.
+
+### 7.3 Understand current
 
 - `refresh-current-understanding(project_id)`
+- `prepare-native-refresh(job_id, preflight)`
+- `prepare-refresh-artifacts(job_id, analysis_mode, artifacts, fallback_reason?, files_reanalyzed?)`
+- `complete-native-refresh(job_id)`
 - `inspect-understanding-refresh(job_id)`
 - `read-current-level(project_id, focus_id?, observed_revision_id?)`
 
 The level response contains the same bounded function, structure, edge, evidence, and coordinate information
-visible on one web page. Passing a returned child as `focus_id` is the ordinary descent mechanism. No graph
-content is accepted from the caller.
+visible on one web page. Passing a returned child as `focus_id` is the ordinary descent mechanism. A caller may
+stage opaque native bundles only through refresh-scoped transfer capabilities; no method accepts graph nodes or
+edges as current-system mutations.
 
-### 7.3 Design future
+### 7.4 Design future
 
 - `start-structure-design(project_id, title)`
 - `read-design-level(workspace_id, focus_id?, design_revision_id?)`
@@ -763,11 +781,12 @@ IDs as mutation targets. `create-implementation-context` requires explicit user 
 authenticated initiating principal, binds an exact immutable design/diff coordinate, and schedules no scan.
 Later comparison is optional and read-only.
 
-### 7.4 Roles and long-running work
+### 7.5 Roles and long-running work
 
-The default root contains only `project-context`, `understand-current`, and `design-future`. A hidden
-`observation-pipeline` Role owns native snapshot/import/publication methods and requires a trusted service
-principal. Broader 0.3 tools remain on a separate compatibility root during migration.
+The default root contains only `project-context`, `distribution`, `understand-current`, and `design-future`.
+Native snapshot/import/publication is not directly exposed: the Agent can stage digest-bound bundles for an active
+refresh, while validator/projector code alone publishes. Broader 0.3 tools remain on a separate compatibility root
+during migration.
 
 Refresh requests return a job resource and report `unchanged | incremental | full`. The UI may poll or subscribe
 through the authenticated HTTP application surface. The embedded UA Dashboard has no MCP Role and cannot publish
@@ -875,10 +894,12 @@ Existing 0.3 data has ambiguous provenance and must not be relabeled as observed
 
 ### Phase 6 — ship the on-demand MCP surface
 
-- Add a persistent runner that preserves the UA state needed for incremental `/understand` updates.
+- Add native-UA distribution and a central checkpoint protocol that preserves the UA state needed for
+  incremental `/understand` updates without a server-local checkout or CoIntent client.
 - Skip all UA work when repository content is unchanged and report every full fallback reason.
 - Replace broad graph reads with one-page-equivalent `read-current-level` and `read-design-level` operations.
-- Expose the compact three-Role public graph and move native publication into a hidden service Role.
+- Expose the compact four-Role public graph. The code-local Agent may stage only refresh-scoped opaque artifacts;
+  validation/projector code remains the only Observation publisher.
 - Create implementation context after explicit user instruction without scheduling post-coding analysis.
 - Keep historical-design versus later-observation comparison optional and read-only.
 - Retire mixed 0.3 mutation tools once no active client depends on them.

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import os
+import uuid
 from pathlib import Path
 
 from contexture import Principal
 from contexture.server import Auth, compile_application
 from contexture.web import RestSurface, Route
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -30,9 +33,23 @@ class StaticTokenVerifier:
         return Principal(
             subject="cointent-agent", client_id="mcp", issuer="cointent-static",
             scopes=frozenset({
-                "cointent.read", "cointent.refresh.request",
+                "cointent.read", "cointent.project.write", "cointent.refresh.request",
                 "cointent.design.write", "cointent.design.finalize",
             }), claims={"auth": "static-token"},
+        )
+
+
+class OpaqueStaticTokenAuth(Auth):
+    """Make the opaque-token audience policy explicit instead of inheriting an SDK default."""
+
+    def settings(self) -> AuthSettings:
+        # This deployment mode has one server-local opaque secret rather than a JWT carrying an audience claim.
+        # The verifier above binds that secret to this server, so RFC resource-parameter validation is inapplicable.
+        return AuthSettings(
+            issuer_url=self.issuer,  # type: ignore[arg-type]
+            resource_server_url=self.resource,  # type: ignore[arg-type]
+            required_scopes=list(self.required_scopes) or None,
+            validate_token_resource=False,
         )
 
 
@@ -75,8 +92,10 @@ def build_http_app() -> Starlette:
     login_throttle = LoginThrottle()
     token = os.environ.get("COINTENT_MCP_TOKEN", "")
     public_origin = os.environ.get("COINTENT_PUBLIC_ORIGIN", "http://127.0.0.1:8811").rstrip("/")
-    auth = Auth(verifier=StaticTokenVerifier(token), issuer=public_origin,
-                resource=f"{public_origin}/mcp", required_scopes=("cointent.read",)) if token else None
+    auth = OpaqueStaticTokenAuth(
+        verifier=StaticTokenVerifier(token), issuer=public_origin,
+        resource=f"{public_origin}/mcp", required_scopes=("cointent.read",),
+    ) if token else None
     wire = compiled.server().build(auth=auth)
     public_host = public_origin.split("://", 1)[-1].split("/", 1)[0]
     security = TransportSecuritySettings(
@@ -88,6 +107,7 @@ def build_http_app() -> Starlette:
 
     async def dispatch(scope, receive, send):
         path = str(scope.get("path", ""))
+        request = Request(scope, receive=receive)
         if path.startswith("/mcp") or path.startswith("/.well-known/"):
             await mcp(scope, receive, send)
             return
@@ -95,7 +115,11 @@ def build_http_app() -> Starlette:
             await rest(scope, receive, send)
             return
 
-        request = Request(scope, receive=receive)
+        if path.startswith("/internal/refresh-artifacts/"):
+            response = await _refresh_artifact_transfer(request)
+            await response(scope, receive, send)
+            return
+
         cookie_token = browser_auth.cookie_token(request.headers.get("cookie", ""))
         session_user = browser_auth.verify(cookie_token)
 
@@ -141,10 +165,6 @@ def build_http_app() -> Starlette:
             return
         if path == "/api/v1/project-state" and request.method == "GET":
             response = _direct_read(request, "project-state")
-            await response(scope, receive, send)
-            return
-        if path == "/api/v1/understanding-refreshes" and request.method == "POST":
-            response = await _direct_write(request, session_user, "request-refresh")
             await response(scope, receive, send)
             return
         if path == "/api/v1/understanding-refresh" and request.method == "GET":
@@ -263,6 +283,66 @@ async def _browser_write(request: Request, session_user: str | None, operation: 
         return JSONResponse({"error": "invalid_request", "detail": str(error)}, status_code=400)
 
 
+async def _refresh_artifact_transfer(request: Request):
+    """Stream one refresh-scoped artifact without routing its bytes through the model."""
+
+    token = request.url.path.rsplit("/", 1)[-1]
+    repository = _runtime_repository()
+    try:
+        if request.method == "GET":
+            transfer = repository.resolve_refresh_transfer(token, direction="download")
+            source = Path(transfer["asset_path"])
+            if not source.is_file() or source.stat().st_size != int(transfer["expected_size"]):
+                raise ValueError("checkpoint artifact is unavailable or has the wrong size")
+            digest = _file_sha256(source)
+            if digest != transfer["expected_digest"]:
+                raise ValueError("checkpoint artifact digest mismatch")
+            return FileResponse(source, media_type="application/gzip", filename="cointent-ua-checkpoint.tar.gz")
+        if request.method != "PUT":
+            return JSONResponse({"error": "method_not_allowed"}, status_code=405)
+        transfer = repository.resolve_refresh_transfer(token, direction="upload")
+        if transfer["status"] == "uploaded":
+            return JSONResponse({"ok": True, "duplicate": True, "digest": transfer["expected_digest"]})
+        expected_size = int(transfer["expected_size"])
+        configured_limit = int(os.environ.get("COINTENT_MAX_REFRESH_UPLOAD_BYTES", str(1024**3)))
+        if expected_size > configured_limit:
+            raise ValueError("declared artifact exceeds the configured upload limit")
+        target = Path(transfer["asset_path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.uploading-{uuid.uuid4().hex[:8]}")
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with temporary.open("wb") as output:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > expected_size or size > configured_limit:
+                        raise ValueError("uploaded artifact exceeds its declared or configured size")
+                    digest.update(chunk)
+                    output.write(chunk)
+            actual_digest = digest.hexdigest()
+            if size != expected_size or actual_digest != transfer["expected_digest"]:
+                raise ValueError("uploaded artifact does not match its declared size and digest")
+            temporary.replace(target)
+            repository.complete_refresh_transfer(transfer["id"], digest=actual_digest, size=size)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return JSONResponse({"ok": True, "duplicate": False, "digest": actual_digest, "size_bytes": size})
+    except KeyError as error:
+        return JSONResponse({"error": "not_found", "detail": str(error)}, status_code=404)
+    except ValueError as error:
+        return JSONResponse({"error": "invalid_transfer", "detail": str(error)}, status_code=400)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _runtime_repository() -> CoIntentRepository:
     database = Path(os.environ.get("COINTENT_DB_PATH", "runtime/cointent.db"))
     asset_root = Path(os.environ.get("COINTENT_DATA_ROOT", str(database.parent / "projects")))
@@ -310,11 +390,7 @@ async def _direct_write(request: Request, session_user: str | None, operation: s
             raise ValueError("request body must be a JSON object")
         repository = _runtime_repository()
         actor = session_user or "local-human"
-        if operation == "request-refresh":
-            result = repository.request_understanding_refresh(
-                str(payload.get("project_id", "")), requested_by=actor,
-            )
-        elif operation == "implementation-context":
+        if operation == "implementation-context":
             result = repository.create_implementation_context(
                 str(payload.get("workspace_id", "")),
                 str(payload.get("design_revision_id", "")),

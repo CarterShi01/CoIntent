@@ -9,8 +9,16 @@ from typing import Any, Literal
 from contexture import Channels, Contexture, Role, Skill, Tool, current_principal
 
 from .design import DesignOperation
+from .distribution import AgentPlatform, InstallationEvidence, OperatingSystem, installation_plan, verify_installation
 from .models import ImplementationLink, ModelPatch
 from .repository import CoIntentRepository
+from .remote_refresh import (
+    ArtifactUploadSpec,
+    NativeRefreshPreflight,
+    complete_native_refresh as complete_native_refresh_job,
+    prepare_native_refresh as prepare_native_refresh_job,
+    prepare_refresh_artifacts as prepare_refresh_artifact_uploads,
+)
 from .scanner import RepositorySnapshot
 
 
@@ -50,13 +58,22 @@ def _require_scope(scope: str) -> None:
         raise PermissionError(f"principal lacks required scope {scope!r}")
 
 
+def _require_refresh_owner(repository: CoIntentRepository, job_id: str) -> None:
+    principal = current_principal()
+    if principal is None:
+        return
+    job = repository.get_understanding_refresh(job_id)
+    if job["requested_by"] != _actor():
+        raise PermissionError("refresh execution must use the principal that requested its lease")
+
+
 class Health(Tool):
     def __init__(self) -> None:
         super().__init__(name="health", description="Report service and model-store health.", read_only=True)
 
     async def invoke(self) -> dict[str, Any]:
         repository = _repository(self)
-        return {"ok": True, "service": "cointent", "schema_version": "0.3",
+        return {"ok": True, "service": "cointent", "schema_version": "0.4",
                 "projects": len(repository.list_projects())}
 
 
@@ -605,13 +622,136 @@ class InspectProjectState(Tool):
         return _repository(self).project_state(project_id)
 
 
+class RegisterProject(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="register-project",
+            description=(
+                "Idempotently register a repository identity and default branch for Agent-native understanding; "
+                "accepts no code or graph content."
+            ),
+            read_only=False,
+        )
+
+    async def invoke(
+        self, project_id: str, name: str, repository: str,
+        default_branch: str = "master", language: str = "en",
+    ) -> dict[str, Any]:
+        _require_scope("cointent.project.write")
+        store = _repository(self)
+        try:
+            existing = store.get_project(project_id)
+        except KeyError:
+            return store.create_project(
+                project_id, name, repository=repository,
+                default_branch=default_branch, language=language,
+            )
+        expected = {
+            "name": name, "repository": repository,
+            "default_branch": default_branch, "language": language,
+        }
+        conflicts = [key for key, value in expected.items() if existing[key] != value]
+        if conflicts:
+            raise ValueError(f"registered project differs in immutable onboarding fields: {conflicts!r}")
+        return store.get_model(project_id)
+
+
+class PrepareUaInstallation(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="prepare-ua-installation",
+            description=(
+                "Return the native official Understand Anything installation plan for the Agent environment; "
+                "CoIntent does not execute client-local commands."
+            ),
+            read_only=True,
+        )
+
+    async def invoke(
+        self, platform: AgentPlatform, operating_system: OperatingSystem,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return installation_plan(platform, operating_system)
+
+
+class VerifyUaInstallation(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="verify-ua-installation",
+            description="Validate post-install evidence, exact UA compatibility, prerequisites, and Agent reload state.",
+            read_only=True,
+        )
+
+    async def invoke(self, evidence: InstallationEvidence) -> dict[str, Any]:
+        _require_scope("cointent.read")
+        return verify_installation(evidence)
+
+
 class RefreshCurrentUnderstanding(Tool):
     def __init__(self) -> None:
-        super().__init__(name="refresh-current-understanding", description="Request one idempotent on-demand code → UA → Observation refresh; accepts no graph content.", read_only=False)
+        super().__init__(name="refresh-current-understanding", description="Request or coalesce one on-demand code → UA → Observation refresh; accepts no graph content.", read_only=False)
 
     async def invoke(self, project_id: str = "idea-factory") -> dict[str, Any]:
         _require_scope("cointent.refresh.request")
         return _repository(self).request_understanding_refresh(project_id, requested_by=_actor())
+
+
+class PrepareNativeRefresh(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="prepare-native-refresh",
+            description=(
+                "Freeze a clean default-branch Git coordinate and obtain the native UA execution/checkpoint plan."
+            ),
+            read_only=False,
+        )
+
+    async def invoke(self, job_id: str, preflight: NativeRefreshPreflight) -> dict[str, Any]:
+        _require_scope("cointent.refresh.request")
+        repository = _repository(self)
+        _require_refresh_owner(repository, job_id)
+        return prepare_native_refresh_job(repository, job_id, preflight)
+
+
+class PrepareRefreshArtifacts(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="prepare-refresh-artifacts",
+            description=(
+                "After native UA completes, declare exact artifact digests and receive refresh-scoped upload URLs."
+            ),
+            read_only=False,
+        )
+
+    async def invoke(
+        self, job_id: str, analysis_mode: Literal["incremental", "full"],
+        artifacts: list[ArtifactUploadSpec], fallback_reason: str | None = None,
+        files_reanalyzed: list[str] | None = None,
+    ) -> dict[str, Any]:
+        _require_scope("cointent.refresh.request")
+        repository = _repository(self)
+        _require_refresh_owner(repository, job_id)
+        return prepare_refresh_artifact_uploads(
+            repository, job_id, analysis_mode=analysis_mode,
+            artifacts=artifacts, fallback_reason=fallback_reason, files_reanalyzed=files_reanalyzed,
+        )
+
+
+class CompleteNativeRefresh(Tool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="complete-native-refresh",
+            description=(
+                "Validate uploaded native UA/source artifacts and atomically publish a new immutable Observation."
+            ),
+            read_only=False,
+        )
+
+    async def invoke(self, job_id: str) -> dict[str, Any]:
+        _require_scope("cointent.refresh.request")
+        repository = _repository(self)
+        _require_refresh_owner(repository, job_id)
+        return complete_native_refresh_job(repository, job_id)
 
 
 class InspectUnderstandingRefresh(Tool):
@@ -926,13 +1066,21 @@ class LearnCurrentSystem(Skill):
             description="Refresh and learn current truth one semantic page at a time.",
             uses=(
                 "cointent/project-context/inspect-project-state",
+                "cointent/distribution/prepare-ua-installation",
+                "cointent/distribution/verify-ua-installation",
                 "cointent/understand-current/refresh-current-understanding",
+                "cointent/understand-current/prepare-native-refresh",
+                "cointent/understand-current/prepare-refresh-artifacts",
+                "cointent/understand-current/complete-native-refresh",
                 "cointent/understand-current/inspect-understanding-refresh",
                 "cointent/understand-current/read-current-level",
             ),
             instructions=(
-                "Inspect state first. Refresh only when the user asks to understand. Read one page-equivalent "
-                "level, and descend with a returned focus identifier only when requested. Never write observed data."
+                "Inspect state first. Refresh only when the user asks to understand. If refresh is required, verify "
+                "native UA through distribution, freeze a clean default-branch commit, run UA in a detached local "
+                "worktree, transfer opaque artifacts through the issued URLs, and complete server validation. "
+                "Never put graph/source bytes in a tool argument or treat staging as publication. Read one "
+                "page-equivalent level, and descend only when requested."
             ),
         )
 
@@ -944,7 +1092,12 @@ class DesignStructureFirst(Skill):
             description="Refresh, design the complete target graph, review its diff, then create coding context.",
             uses=(
                 "cointent/project-context/inspect-project-state",
+                "cointent/distribution/prepare-ua-installation",
+                "cointent/distribution/verify-ua-installation",
                 "cointent/understand-current/refresh-current-understanding",
+                "cointent/understand-current/prepare-native-refresh",
+                "cointent/understand-current/prepare-refresh-artifacts",
+                "cointent/understand-current/complete-native-refresh",
                 "cointent/understand-current/inspect-understanding-refresh",
                 "cointent/design-future/start-structure-design",
                 "cointent/design-future/read-design-level",
@@ -966,7 +1119,22 @@ class ProjectContext(Role):
         super().__init__(
             name="project-context", description="Select a project and inspect its immutable coordinates.",
             instructions="Inspect project state before selecting any current or design coordinate.",
-            tools=[ListProjects(), InspectProjectState()],
+            tools=[ListProjects(), RegisterProject(), InspectProjectState()],
+        )
+
+
+class Distribution(Role):
+    def __init__(self) -> None:
+        super().__init__(
+            name="distribution",
+            description="Install and verify official native Understand Anything Skills where the Agent can access code.",
+            instructions=(
+                "Use only when UA is missing, incompatible, or the user asks to install it. Detect the real Agent "
+                "platform and OS, obtain the native plan, ask the Agent host to execute those official commands, "
+                "then measure and submit post-install evidence. Never claim server-side execution, embed UA as a "
+                "CoIntent Skill, or proceed while verification says incompatible or reload required."
+            ),
+            tools=[PrepareUaInstallation(), VerifyUaInstallation()],
         )
 
 
@@ -979,7 +1147,10 @@ class UnderstandCurrent(Role):
                 "content or turn conversation into an observed write. Return only one page-equivalent level."
             ),
             skills=[LearnCurrentSystem()],
-            tools=[RefreshCurrentUnderstanding(), InspectUnderstandingRefresh(), ReadCurrentLevel()],
+            tools=[
+                RefreshCurrentUnderstanding(), PrepareNativeRefresh(), PrepareRefreshArtifacts(),
+                CompleteNativeRefresh(), InspectUnderstandingRefresh(), ReadCurrentLevel(),
+            ],
         )
 
 
@@ -1010,7 +1181,7 @@ class CoIntent(Role):
                 "Never translate conversation or target design into an observed write. Stop after implementation "
                 "context and compare a historical design with later reality only when requested."
             ),
-            children=[ProjectContext(), UnderstandCurrent(), DesignFuture()],
+            children=[ProjectContext(), Distribution(), UnderstandCurrent(), DesignFuture()],
         )
 
 

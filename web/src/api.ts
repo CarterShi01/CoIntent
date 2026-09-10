@@ -53,14 +53,6 @@ export function fetchProjectState(projectId: string): Promise<ProjectState> {
   return call(`/api/v1/project-state?${new URLSearchParams({ project_id: projectId })}`);
 }
 
-export function requestUnderstandingRefresh(projectId: string): Promise<{ duplicate: boolean; job: UnderstandingRefreshJob }> {
-  return call("/api/v1/understanding-refreshes", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId }),
-  });
-}
-
 export function inspectUnderstandingRefresh(jobId: string): Promise<UnderstandingRefreshJob> {
   return call(`/api/v1/understanding-refresh?${new URLSearchParams({ job_id: jobId })}`);
 }

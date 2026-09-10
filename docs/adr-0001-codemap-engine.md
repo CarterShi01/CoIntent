@@ -2,7 +2,7 @@
 
 **Status:** accepted  
 **Date:** 2026-09-09  
-**Related design:** [CoIntent 0.4 detailed design](design-v0.4.md), [UA Dashboard integration](ua-dashboard-integration.md)
+**Related design:** [CoIntent 0.4 detailed design](design-v0.4.md), [UA Dashboard integration](ua-dashboard-integration.md), [native UA distribution](adr-0002-native-ua-distribution.md), [remote artifact transport](adr-0003-mcp-control-and-artifact-data-plane.md), [Observation provenance](adr-0004-observation-provenance.md), [central UA state](adr-0005-central-ua-state.md)
 
 ## Context
 
@@ -77,16 +77,20 @@ The native graph may contain both kinds in the same node. CoIntent therefore doe
 
 UA execution happens outside the interactive web process. The first CoIntent implementation imports completed JSON artifacts through a CLI/pipeline command. This keeps model tokens, repository credentials, plugin installation, and long-running analysis out of the request path.
 
-The intended production runner:
+The original server-local production runner described below is superseded by ADR-0002 through ADR-0005. The
+equivalent trusted publication boundary now begins with a refresh-scoped remote execution session; UA itself runs
+natively in the Agent environment that has the code. The publication service still:
 
-- checks out or mounts an immutable repository worktree;
+- requires the Agent to analyze an immutable detached repository worktree;
 - runs a pinned UA version with a pinned configuration and declared model profile;
 - denies write access outside the worktree's `.ua` output area;
 - captures logs and exit status;
 - invokes CoIntent import only after both JSON files are complete;
 - promotes an observation only after validation and projection succeed.
 
-The browser and conversational Agent may request a scan job later, but neither can upload replacement graph content or call a graph-upsert API.
+The conversational Agent may request a scan job later; the browser only observes its state. A refresh-scoped transfer capability may stage
+native artifacts, but neither surface can upload a replacement graph outside that state machine or call a
+graph-upsert API. Staging is not publication.
 
 CoIntent directly embeds the pinned UA Dashboard as a read-only browser microfrontend. Browser graph/source
 loading uses authenticated HTTP against immutable CoIntent coordinates. Agent product interaction remains on

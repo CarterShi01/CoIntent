@@ -94,11 +94,11 @@ repository and graph coordinate, while repeat analysis must use Understand Anyth
 | Condition | Knowledge graph work | Domain graph work | Published result |
 |---|---|---|---|
 | Code content unchanged | skip UA; zero LLM work | skip | reuse current Observation |
-| First run, missing/corrupt UA state, or explicit operator force | `/understand --full` | full `/understand-domain` | new Observation |
+| First run or missing/corrupt/incompatible UA state | `/understand --full` | full `/understand-domain` | new Observation |
 | Valid previous UA state and changed code | default incremental `/understand` | full `/understand-domain` | new Observation |
 | Any validation or projection failure | do not publish | do not promote partial output | previous Observation remains visible as stale |
 
-The runner must persist or restore the UA state required for incremental updates, including the complete
+The native refresh protocol must persist or restore the UA state required for incremental updates, including the complete
 knowledge graph, metadata, structural fingerprints, configuration, ignore policy, and previous Git coordinate.
 It must not add `--full` merely because CoIntent imports a complete final JSON artifact.
 
@@ -107,12 +107,14 @@ duration, diagnostics, and the resulting coordinate. Full fallback must carry an
 
 ## 4. User-visible actions
 
-The UI exposes product verbs, not lifecycle machinery:
+The product exposes verbs, not lifecycle machinery. Scan initiation is conversational through the connected
+Agent; the Understand browser tab observes status and remains mutation-free:
 
-| Tab | Primary actions |
+| Surface | Primary actions |
 |---|---|
-| Understand current | **Update understanding**, **open/down one semantic level**, **view evidence**, **open the UA Implementation map** |
-| Design future | **Start structure design**, **revise expected functions/structure**, **view diff**, **implement this design**, **compare a historical design with current** |
+| Agent · Understand current | **Update understanding**, **read/down one semantic level** |
+| Browser · Understand current | **open/down one semantic level**, **view evidence**, **open the UA Implementation map** (read only) |
+| Agent/browser · Design future | **Start structure design**, **revise expected functions/structure**, **view diff**, **implement this design**, **compare a historical design with current** |
 
 “Implement this design” creates the immutable implementation context and hands it to the coding Agent. It does
 not change code itself, publish an Observation, or schedule later analysis. Job polling, snapshot import,
@@ -120,23 +122,37 @@ projection, approval records, and cache recovery are implementation details rath
 
 ## 5. Public Agent MCP operations
 
-CoIntent MCP is the only product-operation surface for conversational and coding Agents. The browser uses an
+CoIntent MCP is the only Agent-facing product-operation and control surface. Refresh-scoped signed HTTPS is the
+opaque artifact data plane defined by ADR-0003; it is not a second product API and its bytes do not transit the
+model. The browser uses an
 authenticated HTTP application surface and directly embeds the read-only UA Dashboard. It does not load visual
 UA data through MCP. Browser and Agent surfaces share domain invariants and immutable coordinates without sharing
-one transport. Exact Dashboard behavior is specified in [the UA integration design](ua-dashboard-integration.md).
+one transport. Exact Dashboard behavior is specified in [the UA integration design](ua-dashboard-integration.md),
+and code-local execution in the [native UA Agent runbook](native-ua-agent-runbook.md).
 
 ### Project context
 
 | Operation | Purpose |
 |---|---|
 | `list-projects()` | Find projects available to the caller. |
+| `register-project(project_id, name, repository, default_branch, language)` | Idempotently register the code coordinate during Agent onboarding; accepts no code or graph. |
 | `inspect-project-state(project_id)` | Return current code/UA/Observation coordinates, staleness, active target drawings, and allowed next actions. |
+
+### Distribution
+
+| Operation | Purpose |
+|---|---|
+| `prepare-ua-installation(platform, operating_system)` | Return official native UA installation commands and the exact supported upstream unit. |
+| `verify-ua-installation(evidence)` | Reject missing, colliding, outdated, dependency-incomplete, or not-yet-reloaded installations. |
 
 ### Understand current
 
 | Operation | Purpose |
 |---|---|
-| `refresh-current-understanding(project_id)` | Start an idempotent refresh job. The server chooses unchanged, incremental, or declared full fallback; callers cannot upload graph content or force recomputation. |
+| `refresh-current-understanding(project_id)` | Start one idempotent refresh lease; accepts no code or graph content. |
+| `prepare-native-refresh(job_id, preflight)` | Freeze the clean default-branch commit and return the detached-worktree/checkpoint execution plan. |
+| `prepare-refresh-artifacts(job_id, analysis_mode, artifacts, fallback_reason?, files_reanalyzed?)` | Declare completed opaque bundle digests and receive short-lived upload URLs. |
+| `complete-native-refresh(job_id)` | Validate staged source/UA bundles and publish only a complete evidence-backed Observation. |
 | `inspect-understanding-refresh(job_id)` | Read progress, chosen mode, change counts, diagnostics, and published coordinate. |
 | `read-current-level(project_id, focus_id?, observed_revision_id?)` | Return one page-equivalent function/structure level and bounded evidence. |
 
@@ -167,9 +183,16 @@ The default capability graph stays aligned with the two product tabs:
 cointent
 ├── project-context
 │   ├── list-projects
+│   ├── register-project
 │   └── inspect-project-state
+├── distribution
+│   ├── prepare-ua-installation
+│   └── verify-ua-installation
 ├── understand-current
 │   ├── refresh-current-understanding
+│   ├── prepare-native-refresh
+│   ├── prepare-refresh-artifacts
+│   ├── complete-native-refresh
 │   ├── inspect-understanding-refresh
 │   └── read-current-level
 └── design-future
@@ -182,9 +205,9 @@ cointent
     └── compare-design-to-current
 ```
 
-One hidden `observation-pipeline` Role is available only to the trusted scanner/UA/projector service principal.
-It may publish CodeSnapshot, UnderstandAnythingSnapshot, and ObservedModelRevision records. It is absent from
-the conversational capability graph.
+The code-local Agent may stage only the two artifacts named by its active refresh lease. Staging operations cannot
+name server paths or publish graph content. The validator/projector service is the sole publisher of CodeSnapshot,
+UnderstandAnythingSnapshot, and ObservedModelRevision records.
 
 There is no UA Dashboard Role and no UA-specific MCP server. Agents read CoIntent's semantic current/design
 models; humans use the embedded UA frontend for full visual code-map exploration.
@@ -195,10 +218,12 @@ Root Role instructions:
 2. route questions about what exists to `understand-current`;
 3. enter `design-future` only after explicit design intent;
 4. refresh before creating a design and never silently rebase an existing drawing;
-5. read at most one page-equivalent level per call unless the user explicitly continues;
-6. never translate a conversation or target drawing into an observed write;
-7. stop after producing implementation context; do not trigger post-coding analysis;
-8. compare historical design and later reality only when requested.
+5. use `distribution` only when native UA is missing or incompatible;
+6. during refresh, require a clean exact commit and transfer bytes only through issued URLs;
+7. read at most one page-equivalent level per call unless the user explicitly continues;
+8. never translate a conversation or target drawing into an observed write;
+9. stop after producing implementation context; do not trigger post-coding analysis;
+10. compare historical design and later reality only when requested.
 
 Two orchestration Skills encode the normal call order:
 
@@ -214,11 +239,15 @@ subject/client/issuer; callers never submit an `actor` string.
 Minimal scopes:
 
 - `cointent.read` — inspect state and read levels/diffs/history;
+- `cointent.project.write` — register one project identity through Agent onboarding;
 - `cointent.refresh.request` — request bounded analysis jobs;
 - `cointent.design.write` — create and revise target drawings;
 - `cointent.design.finalize` — freeze an exact diff digest; a conversational Agent may use it only after an
   explicit user instruction;
-- `cointent.observation.publish` — hidden trusted worker authority.
+- `cointent.refresh.request` also gates refresh-scoped execution and transfer declarations in 0.4; the same
+  principal still has no direct Observation repository operation;
+- Observation publication is an internal validator/projector action and is not an independently callable MCP
+  scope or Tool.
 
 All commands carry an idempotency key or content-derived identity. Design writes require the expected base
 revision. Finalization records the authenticated initiating principal and binds it to an exact immutable

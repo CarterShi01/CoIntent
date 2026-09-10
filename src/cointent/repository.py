@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import secrets
+import shutil
 import sqlite3
 import subprocess
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -61,6 +63,10 @@ from .viewer import (
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _refresh_lease_expiry() -> str:
+    return (datetime.now(UTC) + timedelta(hours=2)).isoformat()
 
 
 def _id(prefix: str) -> str:
@@ -125,6 +131,7 @@ class CoIntentRepository:
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                     code_snapshot_id TEXT NOT NULL REFERENCES snapshots(id),
                     snapshot_json TEXT NOT NULL, content_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+                    asset_path TEXT NOT NULL DEFAULT '',
                     UNIQUE(project_id, code_snapshot_id, content_digest)
                 );
                 CREATE TABLE IF NOT EXISTS observed_model_revisions (
@@ -149,9 +156,23 @@ class CoIntentRepository:
                     status TEXT NOT NULL, job_json TEXT NOT NULL, requested_by TEXT NOT NULL,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS project_runtime_config (
+                CREATE TABLE IF NOT EXISTS refresh_artifact_transfers (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES understanding_refresh_jobs(id),
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    kind TEXT NOT NULL, direction TEXT NOT NULL,
+                    token_digest TEXT NOT NULL UNIQUE,
+                    expected_digest TEXT NOT NULL, expected_size INTEGER NOT NULL,
+                    status TEXT NOT NULL, asset_path TEXT NOT NULL,
+                    expires_at TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
+                    UNIQUE(job_id,kind,direction)
+                );
+                CREATE TABLE IF NOT EXISTS ua_state_checkpoints (
                     project_id TEXT PRIMARY KEY REFERENCES projects(id),
-                    checkout_path TEXT NOT NULL, updated_at TEXT NOT NULL
+                    branch TEXT NOT NULL, base_revision TEXT NOT NULL,
+                    ua_tool_revision TEXT NOT NULL, profile_digest TEXT NOT NULL,
+                    content_digest TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                    asset_path TEXT NOT NULL, created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ua_viewer_sessions (
                     id TEXT PRIMARY KEY, token_digest TEXT NOT NULL UNIQUE,
@@ -239,6 +260,8 @@ class CoIntentRepository:
                     ON observation_expansion_requests(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_understanding_refresh_jobs_project
                     ON understanding_refresh_jobs(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_refresh_transfers_job
+                    ON refresh_artifact_transfers(job_id, status);
                 CREATE INDEX IF NOT EXISTS idx_ua_viewer_sessions_project
                     ON ua_viewer_sessions(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_design_workspaces_v04_project
@@ -266,6 +289,13 @@ class CoIntentRepository:
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE projects ADD COLUMN {name} {declaration}")
+            ua_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(understand_anything_snapshots)").fetchall()
+            }
+            if "asset_path" not in ua_columns:
+                db.execute(
+                    "ALTER TABLE understand_anything_snapshots ADD COLUMN asset_path TEXT NOT NULL DEFAULT ''"
+                )
 
     # Projects and immutable model versions
 
@@ -333,34 +363,6 @@ class CoIntentRepository:
         project = self.get_project(project_id)
         self._write_project_asset(project)
         return project
-
-    def set_project_checkout(self, project_id: str, checkout_path: str | Path) -> dict[str, str]:
-        """Bind a trusted worker checkout without exposing host paths as product data."""
-        self.get_project(project_id)
-        path = Path(checkout_path).resolve()
-        if not path.is_dir() or not (path / ".git").exists():
-            raise ValueError("project checkout must be a local Git working tree")
-        with self.connection() as db:
-            db.execute(
-                """INSERT INTO project_runtime_config(project_id,checkout_path,updated_at)
-                   VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET
-                   checkout_path=excluded.checkout_path,updated_at=excluded.updated_at""",
-                (project_id, str(path), _now()),
-            )
-        return {"project_id": project_id, "checkout_path": str(path)}
-
-    def get_project_checkout(self, project_id: str) -> Path:
-        self.get_project(project_id)
-        with self.connection() as db:
-            row = db.execute(
-                "SELECT checkout_path FROM project_runtime_config WHERE project_id=?", (project_id,),
-            ).fetchone()
-        if row is None:
-            raise ValueError("project has no trusted local checkout; configure it with cointent bind-checkout")
-        path = Path(row["checkout_path"])
-        if not path.is_dir() or not (path / ".git").exists():
-            raise ValueError("configured project checkout is unavailable")
-        return path
 
     def get_model(self, project_id: str, version: int | None = None) -> dict[str, Any]:
         with self.connection() as db:
@@ -826,6 +828,7 @@ class CoIntentRepository:
             knowledge_graph=knowledge, domain_graph=domain, created_at=created,
         )
         observed = project_observed_model(ua_snapshot, code_snapshot, created_at=created)
+        asset_path = self._write_ua_snapshot_asset(ua_snapshot)
         with self.connection() as db:
             existing = db.execute(
                 "SELECT id FROM understand_anything_snapshots WHERE id=?", (ua_snapshot.id,),
@@ -833,10 +836,10 @@ class CoIntentRepository:
             if existing is None:
                 db.execute(
                     """INSERT INTO understand_anything_snapshots(
-                       id,project_id,code_snapshot_id,snapshot_json,content_digest,created_at
-                       ) VALUES(?,?,?,?,?,?)""",
-                    (ua_snapshot.id, project_id, code_snapshot_id, ua_snapshot.model_dump_json(),
-                     ua_snapshot.content_digest, created),
+                       id,project_id,code_snapshot_id,snapshot_json,content_digest,created_at,asset_path
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (ua_snapshot.id, project_id, code_snapshot_id, _ua_snapshot_metadata(ua_snapshot),
+                     ua_snapshot.content_digest, created, str(asset_path)),
                 )
             existing_observed = db.execute(
                 "SELECT id FROM observed_model_revisions WHERE id=?", (observed.id,),
@@ -851,14 +854,117 @@ class CoIntentRepository:
                      observed.parent_revision_id, observed.refinement_of_node_id,
                      observed.model_dump_json(), observed.content_digest, created),
                 )
-        if existing is None:
-            self._write_ua_snapshot_asset(ua_snapshot)
         if existing_observed is None:
             self._write_observed_revision_asset(observed)
         return {
             "duplicate": existing is not None and existing_observed is not None,
             "ua_snapshot": self.get_understand_anything_snapshot(ua_snapshot.id),
             "observed_revision": self.get_observed_revision(observed.id),
+        }
+
+    def publish_native_observation(
+        self, snapshot: RepositorySnapshot, ua_snapshot: UnderstandAnythingSnapshot,
+        observed: ObservedModelRevision, *, expected_base_observed_revision_id: str | None,
+    ) -> dict[str, Any]:
+        """Publish one prevalidated native refresh coordinate in one SQLite transaction."""
+
+        if not (
+            snapshot.project_id == ua_snapshot.project_id == observed.project_id
+            and ua_snapshot.code_snapshot_id == snapshot.id
+            and observed.code_snapshot_id == snapshot.id
+            and observed.ua_snapshot_id == ua_snapshot.id
+            and observed.parent_revision_id is None
+        ):
+            raise ValueError("native publication inputs do not share one root coordinate")
+        self.get_project(snapshot.project_id)
+
+        # Assets are immutable/content-addressed. Writing them first can leave only harmless orphans on rollback;
+        # readers cannot discover them until all database rows commit together.
+        self._write_snapshot_asset(snapshot)
+        self._write_ua_snapshot_asset(ua_snapshot)
+        self._write_observed_revision_asset(observed)
+
+        created = _now()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                """SELECT id FROM observed_model_revisions
+                   WHERE project_id=? AND parent_revision_id IS NULL
+                   ORDER BY created_at DESC LIMIT 1""",
+                (snapshot.project_id,),
+            ).fetchone()
+            current_id = None if current is None else str(current["id"])
+            if current_id != expected_base_observed_revision_id:
+                if current_id == observed.id:
+                    return {
+                        "duplicate": True,
+                        "ua_snapshot": ua_snapshot.model_dump(mode="json"),
+                        "observed_revision": observed.model_dump(mode="json"),
+                    }
+                raise ValueError("current Observation changed after this refresh froze its baseline")
+
+            existing_snapshot = db.execute("SELECT snapshot_json FROM snapshots WHERE id=?", (snapshot.id,)).fetchone()
+            if existing_snapshot is None:
+                previous_row = db.execute(
+                    "SELECT snapshot_json FROM snapshots WHERE project_id=? ORDER BY created_at DESC LIMIT 1",
+                    (snapshot.project_id,),
+                ).fetchone()
+                previous = RepositorySnapshot.model_validate_json(previous_row[0]) if previous_row else None
+                delta = snapshot_diff(previous, snapshot)
+                db.execute(
+                    "INSERT INTO snapshots(id,project_id,snapshot_json,diff_json,created_at) VALUES(?,?,?,?,?)",
+                    (snapshot.id, snapshot.project_id, snapshot.model_dump_json(), json.dumps(delta), created),
+                )
+                model = db.execute(
+                    """SELECT version,model_json FROM model_versions WHERE project_id=?
+                       ORDER BY version DESC LIMIT 1""",
+                    (snapshot.project_id,),
+                ).fetchone()
+                if model is None:
+                    raise ValueError("project has no design model")
+                links = json.loads(model["model_json"])["implementation_links"]
+                db.execute(
+                    """INSERT INTO mapping_revisions(id,project_id,design_version,snapshot_id,trace_links_json,created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (_id("mapping"), snapshot.project_id, int(model["version"]), snapshot.id,
+                     json.dumps(links, separators=(",", ":"), sort_keys=True), created),
+                )
+            elif existing_snapshot["snapshot_json"] != snapshot.model_dump_json():
+                raise ValueError("content-derived source snapshot identity collision")
+
+            existing_ua = db.execute(
+                "SELECT content_digest FROM understand_anything_snapshots WHERE id=?", (ua_snapshot.id,),
+            ).fetchone()
+            if existing_ua is None:
+                asset_path = self._ua_snapshot_asset_path(ua_snapshot.project_id, ua_snapshot.id)
+                db.execute(
+                    """INSERT INTO understand_anything_snapshots(
+                       id,project_id,code_snapshot_id,snapshot_json,content_digest,created_at,asset_path
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (ua_snapshot.id, snapshot.project_id, snapshot.id, _ua_snapshot_metadata(ua_snapshot),
+                     ua_snapshot.content_digest, created, str(asset_path)),
+                )
+            elif existing_ua["content_digest"] != ua_snapshot.content_digest:
+                raise ValueError("content-derived UA snapshot identity collision")
+
+            existing_observed = db.execute(
+                "SELECT revision_json FROM observed_model_revisions WHERE id=?", (observed.id,),
+            ).fetchone()
+            if existing_observed is None:
+                db.execute(
+                    """INSERT INTO observed_model_revisions(
+                       id,project_id,code_snapshot_id,ua_snapshot_id,parent_revision_id,
+                       refinement_of_node_id,revision_json,content_digest,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (observed.id, snapshot.project_id, snapshot.id, ua_snapshot.id, None, None,
+                     observed.model_dump_json(), observed.content_digest, created),
+                )
+            elif existing_observed["revision_json"] != observed.model_dump_json():
+                raise ValueError("content-derived Observation identity collision")
+        return {
+            "duplicate": False,
+            "ua_snapshot": ua_snapshot.model_dump(mode="json"),
+            "observed_revision": observed.model_dump(mode="json"),
         }
 
     def get_understand_anything_snapshot(self, snapshot_id: str) -> dict[str, Any]:
@@ -868,17 +974,25 @@ class CoIntentRepository:
             ).fetchone()
         if row is None:
             raise KeyError(f"unknown Understand Anything snapshot {snapshot_id!r}")
-        return json.loads(row["snapshot_json"])
+        asset_path = str(row["asset_path"] or "")
+        if asset_path:
+            path = Path(asset_path)
+            if path.is_file():
+                return json.loads(path.read_text(encoding="utf-8"))
+        inline = json.loads(row["snapshot_json"])
+        if "knowledge_graph" in inline or "knowledgeGraph" in inline:
+            return inline
+        raise ValueError("immutable Understand Anything snapshot asset is unavailable")
 
     def list_understand_anything_snapshots(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
         self.get_project(project_id)
         with self.connection() as db:
             rows = db.execute(
-                """SELECT snapshot_json FROM understand_anything_snapshots
+                """SELECT id FROM understand_anything_snapshots
                    WHERE project_id=? ORDER BY created_at DESC LIMIT ?""",
                 (project_id, max(1, min(limit, 100))),
             ).fetchall()
-        return [json.loads(row["snapshot_json"]) for row in rows]
+        return [self.get_understand_anything_snapshot(str(row["id"])) for row in rows]
 
     def get_observed_revision(self, revision_id: str) -> dict[str, Any]:
         with self.connection() as db:
@@ -941,23 +1055,40 @@ class CoIntentRepository:
             "observed_revision": revision,
         }
 
-    # Explicit on-demand understanding jobs. Only a trusted worker publishes observations.
+    # Explicit on-demand understanding jobs. Agents stage native artifacts; only validation publishes.
 
     def request_understanding_refresh(self, project_id: str, *, requested_by: str) -> dict[str, Any]:
         self.get_project(project_id)
+        expired_job_id: str | None = None
         with self.connection() as db:
             active = db.execute(
-                """SELECT job_json FROM understanding_refresh_jobs
-                   WHERE project_id=? AND status IN ('queued','running')
+                """SELECT id,status,job_json FROM understanding_refresh_jobs
+                   WHERE project_id=? AND status IN ('queued','running','awaiting_upload','validating')
                    ORDER BY created_at DESC LIMIT 1""",
                 (project_id,),
             ).fetchone()
             if active is not None:
-                return {"duplicate": True, "job": json.loads(active["job_json"])}
+                active_job = UnderstandingRefreshJob.model_validate_json(active["job_json"])
+                expired = (
+                    active_job.lease_expires_at is None
+                    or datetime.fromisoformat(active_job.lease_expires_at) <= datetime.now(UTC)
+                )
+                if not expired:
+                    return {"duplicate": True, "job": active_job.model_dump(mode="json")}
+                failed = active_job.model_copy(update={
+                    "status": "failed", "error": "refresh lease expired before completion",
+                    "completed_at": _now(),
+                })
+                db.execute(
+                    "UPDATE understanding_refresh_jobs SET status='failed',job_json=?,updated_at=? WHERE id=?",
+                    (failed.model_dump_json(), _now(), active["id"]),
+                )
+                expired_job_id = str(active["id"])
             created = _now()
             job = UnderstandingRefreshJob(
                 id=_id("understanding-refresh"), project_id=project_id,
                 requested_by=requested_by, created_at=created,
+                lease_expires_at=_refresh_lease_expiry(),
             )
             db.execute(
                 """INSERT INTO understanding_refresh_jobs(
@@ -965,6 +1096,8 @@ class CoIntentRepository:
                    ) VALUES(?,?,?,?,?,?,?)""",
                 (job.id, project_id, job.status, job.model_dump_json(), requested_by, created, created),
             )
+        if expired_job_id is not None:
+            self.purge_refresh_staging(expired_job_id)
         return {"duplicate": False, "job": job.model_dump(mode="json")}
 
     def get_understanding_refresh(self, job_id: str) -> dict[str, Any]:
@@ -975,15 +1108,6 @@ class CoIntentRepository:
         if row is None:
             raise KeyError(f"unknown understanding refresh {job_id!r}")
         return json.loads(row["job_json"])
-
-    def next_queued_understanding_refresh(self) -> str | None:
-        """Return the oldest queued job for a trusted worker to claim."""
-        with self.connection() as db:
-            row = db.execute(
-                """SELECT id FROM understanding_refresh_jobs
-                   WHERE status='queued' ORDER BY created_at ASC LIMIT 1"""
-            ).fetchone()
-        return None if row is None else str(row["id"])
 
     def list_understanding_refreshes(self, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
         self.get_project(project_id)
@@ -996,7 +1120,7 @@ class CoIntentRepository:
         return [json.loads(row["job_json"]) for row in rows]
 
     def claim_understanding_refresh(self, job_id: str) -> dict[str, Any]:
-        """Atomically claim a queued job for the trusted out-of-process worker."""
+        """Atomically claim a queued job for the code-local Agent execution lease."""
         with self.connection() as db:
             row = db.execute(
                 "SELECT status,job_json FROM understanding_refresh_jobs WHERE id=?", (job_id,),
@@ -1007,6 +1131,7 @@ class CoIntentRepository:
                 raise ValueError("understanding refresh is not queued")
             job = UnderstandingRefreshJob.model_validate_json(row["job_json"]).model_copy(update={
                 "status": "running", "started_at": _now(),
+                "lease_expires_at": _refresh_lease_expiry(),
             })
             changed = db.execute(
                 """UPDATE understanding_refresh_jobs SET status='running',job_json=?,updated_at=?
@@ -1016,6 +1141,222 @@ class CoIntentRepository:
             if changed.rowcount != 1:
                 raise ValueError("understanding refresh was claimed by another worker")
         return job.model_dump(mode="json")
+
+    def start_native_understanding_refresh(
+        self, job_id: str, *, repository_revision: str, repository_branch: str,
+        analysis_profile_digest: str,
+    ) -> dict[str, Any]:
+        """Claim a refresh for execution by the Agent that owns the source checkout."""
+
+        claimed = UnderstandingRefreshJob.model_validate(self.claim_understanding_refresh(job_id))
+        checkpoint = self.get_ua_checkpoint(claimed.project_id)
+        base = None if checkpoint is None else str(checkpoint["base_revision"])
+        updated = claimed.model_copy(update={
+            "repository_revision": repository_revision,
+            "repository_branch": repository_branch,
+            "analysis_profile_digest": analysis_profile_digest,
+            "checkpoint_base_revision": base,
+            "lease_expires_at": _refresh_lease_expiry(),
+        })
+        with self.connection() as db:
+            changed = db.execute(
+                "UPDATE understanding_refresh_jobs SET job_json=?,updated_at=? WHERE id=? AND status='running'",
+                (updated.model_dump_json(), _now(), job_id),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("understanding refresh is not running")
+        return {"job": updated.model_dump(mode="json"), "checkpoint": checkpoint}
+
+    def update_native_understanding_refresh(
+        self, job: UnderstandingRefreshJob, *, expected_status: str,
+    ) -> dict[str, Any]:
+        if job.status in {"running", "awaiting_upload", "validating"}:
+            job = job.model_copy(update={"lease_expires_at": _refresh_lease_expiry()})
+        with self.connection() as db:
+            changed = db.execute(
+                "UPDATE understanding_refresh_jobs SET status=?,job_json=?,updated_at=? WHERE id=? AND status=?",
+                (job.status, job.model_dump_json(), _now(), job.id, expected_status),
+            )
+            if changed.rowcount != 1:
+                raise ValueError(f"understanding refresh is not {expected_status}")
+        return job.model_dump(mode="json")
+
+    def issue_refresh_transfer(
+        self, job_id: str, *, kind: str, direction: str, expected_digest: str,
+        expected_size: int, source_path: Path | None = None, ttl_minutes: int = 30,
+    ) -> dict[str, Any]:
+        if kind not in {"ua-state", "source-snapshot", "checkpoint"}:
+            raise ValueError("unsupported refresh artifact kind")
+        if direction not in {"upload", "download"}:
+            raise ValueError("transfer direction must be upload or download")
+        if len(expected_digest) != 64 or any(char not in "0123456789abcdef" for char in expected_digest):
+            raise ValueError("artifact digest must be a lowercase SHA-256")
+        if expected_size <= 0:
+            raise ValueError("artifact size must be positive")
+        job = UnderstandingRefreshJob.model_validate(self.get_understanding_refresh(job_id))
+        token = secrets.token_urlsafe(32)
+        identifier = _id("transfer")
+        if source_path is None:
+            asset = self._project_dir(job.project_id) / "refresh-staging" / job.id / f"{kind}.tar.gz"
+        else:
+            asset = source_path.resolve()
+            if not asset.is_file():
+                raise ValueError("download artifact is unavailable")
+        expires = (datetime.now(UTC) + timedelta(minutes=max(1, min(ttl_minutes, 120)))).isoformat()
+        with self.connection() as db:
+            db.execute(
+                "DELETE FROM refresh_artifact_transfers WHERE job_id=? AND kind=? AND direction=?",
+                (job_id, kind, direction),
+            )
+            db.execute(
+                """INSERT INTO refresh_artifact_transfers(
+                   id,job_id,project_id,kind,direction,token_digest,expected_digest,expected_size,
+                   status,asset_path,expires_at,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (identifier, job_id, job.project_id, kind, direction, hashlib.sha256(token.encode()).hexdigest(),
+                 expected_digest, expected_size, "ready", str(asset), expires, _now()),
+            )
+        return {
+            "id": identifier, "kind": kind, "direction": direction,
+            "url": f"/internal/refresh-artifacts/{token}", "expires_at": expires,
+            "expected_digest": expected_digest, "expected_size": expected_size,
+        }
+
+    def resolve_refresh_transfer(self, token: str, *, direction: str) -> dict[str, Any]:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT * FROM refresh_artifact_transfers WHERE token_digest=? AND direction=?",
+                (digest, direction),
+            ).fetchone()
+        if row is None:
+            raise KeyError("unknown refresh transfer")
+        item = dict(row)
+        if datetime.fromisoformat(item["expires_at"]) <= datetime.now(UTC):
+            raise ValueError("refresh transfer expired")
+        if direction == "upload" and item["status"] == "uploaded":
+            return item
+        job = UnderstandingRefreshJob.model_validate(self.get_understanding_refresh(item["job_id"]))
+        if job.lease_expires_at is None or datetime.fromisoformat(job.lease_expires_at) <= datetime.now(UTC):
+            raise ValueError("refresh lease expired")
+        allowed_statuses = {"awaiting_upload"} if direction == "upload" else {"running", "awaiting_upload"}
+        if job.status not in allowed_statuses:
+            raise ValueError("refresh is not active for this transfer")
+        return item
+
+    def complete_refresh_transfer(self, transfer_id: str, *, digest: str, size: int) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM refresh_artifact_transfers WHERE id=?", (transfer_id,)).fetchone()
+            if row is None:
+                raise KeyError("unknown refresh transfer")
+            item = dict(row)
+            if item["status"] == "uploaded" and item["expected_digest"] == digest and item["expected_size"] == size:
+                return item
+            if item["status"] != "ready":
+                raise ValueError("refresh transfer is not writable")
+            if item["expected_digest"] != digest or int(item["expected_size"]) != size:
+                raise ValueError("uploaded artifact does not match its declared size and digest")
+            db.execute(
+                "UPDATE refresh_artifact_transfers SET status='uploaded',completed_at=? WHERE id=?",
+                (_now(), transfer_id),
+            )
+        return {**item, "status": "uploaded", "completed_at": _now()}
+
+    def list_refresh_transfers(self, job_id: str) -> list[dict[str, Any]]:
+        self.get_understanding_refresh(job_id)
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT * FROM refresh_artifact_transfers WHERE job_id=? ORDER BY kind,direction", (job_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def purge_refresh_staging(self, job_id: str) -> None:
+        """Best-effort removal of uploaded archives after completion or lease expiry."""
+
+        job = UnderstandingRefreshJob.model_validate(self.get_understanding_refresh(job_id))
+        if job.status not in {"completed", "failed"}:
+            return
+        staging = (self._project_dir(job.project_id) / "refresh-staging" / job.id).resolve()
+        for transfer in self.list_refresh_transfers(job_id):
+            if transfer["direction"] != "upload":
+                continue
+            path = Path(transfer["asset_path"]).resolve()
+            if staging not in path.parents:
+                continue
+            path.unlink(missing_ok=True)
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+
+    def get_ua_checkpoint(self, project_id: str) -> dict[str, Any] | None:
+        self.get_project(project_id)
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM ua_state_checkpoints WHERE project_id=?", (project_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        if not Path(item["asset_path"]).is_file():
+            return None
+        return item
+
+    def promote_ua_checkpoint(
+        self, project_id: str, *, branch: str, base_revision: str, ua_tool_revision: str,
+        profile_digest: str, content_digest: str, size_bytes: int, source_path: Path,
+    ) -> dict[str, Any]:
+        target = self._project_dir(project_id) / "ua-checkpoints" / f"{content_digest}.tar.gz"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            temporary = target.with_suffix(".tmp")
+            shutil.copyfile(source_path, temporary)
+            temporary.replace(target)
+        created = _now()
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO ua_state_checkpoints(
+                   project_id,branch,base_revision,ua_tool_revision,profile_digest,content_digest,
+                   size_bytes,asset_path,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+                   branch=excluded.branch,base_revision=excluded.base_revision,
+                   ua_tool_revision=excluded.ua_tool_revision,profile_digest=excluded.profile_digest,
+                   content_digest=excluded.content_digest,size_bytes=excluded.size_bytes,
+                   asset_path=excluded.asset_path,created_at=excluded.created_at""",
+                (project_id, branch, base_revision, ua_tool_revision, profile_digest, content_digest,
+                 size_bytes, str(target), created),
+            )
+        return {
+            "project_id": project_id, "branch": branch, "base_revision": base_revision,
+            "ua_tool_revision": ua_tool_revision, "profile_digest": profile_digest,
+            "content_digest": content_digest, "size_bytes": size_bytes,
+        }
+
+    def store_uploaded_snapshot_sources(self, snapshot: RepositorySnapshot, files_root: Path) -> int:
+        """Persist verified source bundle content by digest without a server-local Git checkout."""
+
+        directory = self._project_dir(snapshot.project_id) / "source-blobs"
+        directory.mkdir(parents=True, exist_ok=True)
+        stored = 0
+        for artifact in snapshot.artifacts:
+            source = files_root / artifact.path
+            if not source.is_file():
+                raise ValueError(f"source bundle is missing {artifact.path!r}")
+            digest = hashlib.sha256()
+            size = 0
+            with source.open("rb") as input_stream:
+                while chunk := input_stream.read(1024 * 1024):
+                    digest.update(chunk)
+                    size += len(chunk)
+            if size != artifact.size or digest.hexdigest() != artifact.sha256:
+                raise ValueError(f"source bundle digest mismatch for {artifact.path!r}")
+            target = directory / artifact.sha256
+            if target.is_file():
+                continue
+            temporary = target.with_suffix(".tmp")
+            with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+            temporary.replace(target)
+            stored += 1
+        return stored
 
     def finish_understanding_refresh(self, job: UnderstandingRefreshJob) -> dict[str, Any]:
         if job.status not in {"completed", "failed"}:
@@ -1549,6 +1890,14 @@ class CoIntentRepository:
             raise ValueError("design must start from a root Observation, not a refinement")
         if current_revision is None or current_revision["id"] != observed.id or current["status"] != "current":
             raise ValueError("design must start from the latest valid root Observation; update understanding first")
+        refreshes = self.list_understanding_refreshes(project_id, 1)
+        latest_refresh = refreshes[0] if refreshes else None
+        if (
+            latest_refresh is None
+            or latest_refresh["status"] != "completed"
+            or latest_refresh["observed_revision_id"] != observed.id
+        ):
+            raise ValueError("design requires the latest explicitly completed understanding refresh")
         workspace_id = _id("design-workspace")
         created = _now()
         revision = seed_design_from_observation(
@@ -2415,6 +2764,9 @@ class CoIntentRepository:
             projects = db.execute("SELECT * FROM projects").fetchall()
             versions = db.execute("SELECT project_id,version,model_json FROM model_versions").fetchall()
             snapshots = db.execute("SELECT snapshot_json FROM snapshots").fetchall()
+            ua_snapshots = db.execute(
+                "SELECT id,project_id,snapshot_json,asset_path FROM understand_anything_snapshots"
+            ).fetchall()
         for row in projects:
             target = self._project_dir(row["id"]) / "project.json"
             if not target.exists():
@@ -2428,6 +2780,25 @@ class CoIntentRepository:
             target = self._project_dir(snapshot.project_id) / "snapshots" / f"{snapshot.id}.json"
             if not target.exists():
                 _atomic_json(target, snapshot.model_dump())
+        ua_asset_updates: list[tuple[str, str, str]] = []
+        for row in ua_snapshots:
+            target = self._ua_snapshot_asset_path(str(row["project_id"]), str(row["id"]))
+            inline = json.loads(row["snapshot_json"])
+            has_inline_graph = "knowledge_graph" in inline or "knowledgeGraph" in inline
+            if not target.exists() and has_inline_graph:
+                snapshot = UnderstandAnythingSnapshot.model_validate(inline)
+                _atomic_json(target, snapshot.model_dump(mode="json", by_alias=True))
+            if target.exists() and has_inline_graph:
+                snapshot = UnderstandAnythingSnapshot.model_validate(inline)
+                ua_asset_updates.append((_ua_snapshot_metadata(snapshot), str(target), str(row["id"])))
+            elif target.exists() and str(row["asset_path"] or "") != str(target):
+                ua_asset_updates.append((str(row["snapshot_json"]), str(target), str(row["id"])))
+        if ua_asset_updates:
+            with self.connection() as db:
+                db.executemany(
+                    "UPDATE understand_anything_snapshots SET snapshot_json=?,asset_path=? WHERE id=?",
+                    ua_asset_updates,
+                )
 
     def _project_dir(self, project_id: str) -> Path:
         candidate = Path(project_id)
@@ -2443,19 +2814,35 @@ class CoIntentRepository:
         _atomic_json(self._project_dir(project_id) / "design" / f"v{version:06d}.json", model.model_dump())
 
     def _write_snapshot_asset(self, snapshot: RepositorySnapshot) -> None:
-        _atomic_json(self._project_dir(snapshot.project_id) / "snapshots" / f"{snapshot.id}.json", snapshot.model_dump())
+        path = self._project_dir(snapshot.project_id) / "snapshots" / f"{snapshot.id}.json"
+        if path.exists():
+            existing = RepositorySnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+            if existing != snapshot:
+                raise ValueError("immutable source snapshot asset identity collision")
+            return
+        _atomic_json(path, snapshot.model_dump())
 
-    def _write_ua_snapshot_asset(self, snapshot: UnderstandAnythingSnapshot) -> None:
-        _atomic_json(
-            self._project_dir(snapshot.project_id) / "understand-anything" / f"{snapshot.id}.json",
-            snapshot.model_dump(mode="json", by_alias=True),
-        )
+    def _ua_snapshot_asset_path(self, project_id: str, snapshot_id: str) -> Path:
+        return self._project_dir(project_id) / "understand-anything" / f"{snapshot_id}.json"
+
+    def _write_ua_snapshot_asset(self, snapshot: UnderstandAnythingSnapshot) -> Path:
+        path = self._ua_snapshot_asset_path(snapshot.project_id, snapshot.id)
+        if path.exists():
+            existing = UnderstandAnythingSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+            if existing.id != snapshot.id or existing.content_digest != snapshot.content_digest:
+                raise ValueError("immutable UA snapshot asset identity collision")
+            return path
+        _atomic_json(path, snapshot.model_dump(mode="json", by_alias=True))
+        return path
 
     def _write_observed_revision_asset(self, revision: ObservedModelRevision) -> None:
-        _atomic_json(
-            self._project_dir(revision.project_id) / "observed" / f"{revision.id}.json",
-            revision.model_dump(mode="json"),
-        )
+        path = self._project_dir(revision.project_id) / "observed" / f"{revision.id}.json"
+        if path.exists():
+            existing = ObservedModelRevision.model_validate_json(path.read_text(encoding="utf-8"))
+            if existing.id != revision.id or existing.content_digest != revision.content_digest:
+                raise ValueError("immutable Observation asset identity collision")
+            return
+        _atomic_json(path, revision.model_dump(mode="json"))
 
     def _write_target_workspace_asset(self, workspace: DesignWorkspace) -> None:
         _atomic_json(
@@ -2643,6 +3030,16 @@ def _reachable(entries: list[str], edges: list[Any]) -> set[str]:
         frontier = {target for source in frontier for target in outgoing.get(source, set()) if target not in seen}
         seen.update(frontier)
     return seen
+
+
+def _ua_snapshot_metadata(snapshot: UnderstandAnythingSnapshot) -> str:
+    """Compact SQLite record; large native graphs live in the immutable asset file."""
+
+    value = snapshot.model_dump(
+        mode="json", exclude={"knowledge_graph", "domain_graph"},
+    )
+    value["asset_format"] = "cointent.ua-snapshot-json/0.1"
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _atomic_json(path: Path, data: Any) -> None:

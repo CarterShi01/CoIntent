@@ -3,15 +3,16 @@ import type { CSSProperties, ReactNode } from "react";
 import {
   applyTargetDesignOperations, createImplementationContext, createTargetDesignWorkspace,
   createUaViewerSession, fetchStructureDesignDiff,
-  fetchObservation, fetchSession, fetchTargetDesignWorkspace, fetchUaNodeSubjects,
+  fetchObservation, fetchProjectState, fetchSession, fetchTargetDesignWorkspace, fetchUaNodeSubjects,
   inspectUnderstandingRefresh, listProjects, loadWorkspace, login, logout,
-  requestObservationExpansion, requestUnderstandingRefresh,
+  requestObservationExpansion,
 } from "./api";
 import type {
   AlignmentBaseline, ChangeSet, DesignVersion, Finding, ImplementationLink, ModelResponse,
   ImplementationContextResult, ImplementationRef, ObservationCoordinate, OverviewResponse, Project,
   Proposal, Responsibility, SpecificationItem, SpecificationResponsibilityLink, TargetDesignOperation,
-  StructureDesignDiff, TargetDesignView, UaSemanticSubject, UaViewerSession, UnderstandingRefreshJob, Workflow,
+  ProjectState, StructureDesignDiff, TargetDesignView, UaSemanticSubject, UaViewerSession,
+  UnderstandingRefreshJob, Workflow,
 } from "./types";
 
 type Workspace = {
@@ -41,7 +42,7 @@ export default function App() {
     new URLSearchParams(location.search).get("view") === "implementation" ? "implementation" : "system");
   const [routeKey, setRouteKey] = useState(0);
   const [refreshJob, setRefreshJob] = useState<UnderstandingRefreshJob | null>(null);
-  const [designStartPending, setDesignStartPending] = useState(false);
+  const [projectState, setProjectState] = useState<ProjectState | null>(null);
   const [viewerSession, setViewerSession] = useState<UaViewerSession | null>(null);
   const [viewerFocus, setViewerFocus] = useState<ImplementationRef | null>(null);
   const [viewerOriginId, setViewerOriginId] = useState("");
@@ -93,10 +94,13 @@ export default function App() {
       loadWorkspace(projectId, designVersion),
       fetchObservation(projectId, linkedRevision),
       fetchTargetDesignWorkspace(projectId),
-    ]).then(([next, observed, target]) => {
+      fetchProjectState(projectId),
+    ]).then(([next, observed, target, state]) => {
       setWorkspace(next);
       setObservation(observed);
       setTargetDesign(target);
+      setProjectState(state);
+      setRefreshJob(state.latest_refresh);
       setSelectedObserved(observed.observed_revision?.capabilities[0]?.responsibility_id
         ?? observed.observed_revision?.responsibilities[0]?.id ?? "");
       const model = next.model.model;
@@ -122,7 +126,7 @@ export default function App() {
   }, [auth.state, projectId, designVersion, routeKey]);
 
   useEffect(() => {
-    if (!refreshJob || !["queued", "running"].includes(refreshJob.status)) return;
+    if (!refreshJob || !["queued", "running", "awaiting_upload", "validating"].includes(refreshJob.status)) return;
     const timer = window.setInterval(() => {
       inspectUnderstandingRefresh(refreshJob.id).then(async (job) => {
         setRefreshJob(job);
@@ -132,17 +136,33 @@ export default function App() {
           setSelectedObserved(observed.observed_revision?.capabilities[0]?.responsibility_id
             ?? observed.observed_revision?.responsibilities[0]?.id ?? "");
           setViewerSession(null);
-          if (designStartPending && job.observed_revision_id) {
-            await createTargetFromBaseline(job.observed_revision_id);
-            setDesignStartPending(false);
-          }
-        } else if (job.status === "failed" && designStartPending) {
-          setDesignStartPending(false);
+          setProjectState(await fetchProjectState(projectId));
         }
       }).catch(handleFailure);
     }, 1800);
     return () => window.clearInterval(timer);
-  }, [refreshJob?.id, refreshJob?.status, projectId, designStartPending]);
+  }, [refreshJob?.id, refreshJob?.status, projectId]);
+
+  useEffect(() => {
+    if (auth.state !== "in" || !projectId) return;
+    const observe = () => {
+      if (document.visibilityState === "hidden") return;
+      fetchProjectState(projectId).then((state) => {
+        setProjectState(state);
+        setRefreshJob(state.latest_refresh);
+        const linkedRevision = new URLSearchParams(location.search).get("observed_revision");
+        if (!linkedRevision && state.observation.observed_revision?.id
+            !== observation?.observed_revision?.id) {
+          setObservation(state.observation);
+          setSelectedObserved(state.observation.observed_revision?.capabilities[0]?.responsibility_id
+            ?? state.observation.observed_revision?.responsibilities[0]?.id ?? "");
+          setViewerSession(null);
+        }
+      }).catch(handleFailure);
+    };
+    const timer = window.setInterval(observe, 3000);
+    return () => window.clearInterval(timer);
+  }, [auth.state, projectId, observation?.observed_revision?.id]);
 
   function handleFailure(reason: unknown) {
     const message = errorText(reason);
@@ -164,15 +184,6 @@ export default function App() {
     history.pushState({}, "", `${mode === "design" ? "/design" : "/understand"}?${query}`);
     setDesignVersion(undefined);
     setProjectId(nextProjectId);
-  }
-
-  async function updateUnderstanding() {
-    try {
-      const result = await requestUnderstandingRefresh(projectId);
-      setRefreshJob(result.job);
-    } catch (reason) {
-      handleFailure(reason);
-    }
   }
 
   async function ensureViewer(nextObservation = observation): Promise<UaViewerSession | null> {
@@ -348,15 +359,12 @@ export default function App() {
 
   async function startTargetDesign() {
     try {
-      setDesignStartPending(true);
-      const result = await requestUnderstandingRefresh(projectId);
-      setRefreshJob(result.job);
-      if (result.job.status === "completed" && result.job.observed_revision_id) {
-        await createTargetFromBaseline(result.job.observed_revision_id);
-        setDesignStartPending(false);
+      const baseline = observation?.observed_revision?.id;
+      if (!baseline || !projectState?.allowed_next_actions.includes("start_structure_design")) {
+        throw new Error("Ask your Agent to update understanding before starting a new design.");
       }
+      await createTargetFromBaseline(baseline);
     } catch (reason) {
-      setDesignStartPending(false);
       handleFailure(reason);
     }
   }
@@ -441,13 +449,12 @@ export default function App() {
     {mode === "understand" && <nav className="understand-subviews" aria-label="Current understanding view">
       <div><button className={understandSubview === "system" ? "active" : ""} onClick={() => void chooseUnderstandSubview("system")}><span>System view</span><small>Functions and Responsibilities</small></button>
       <button className={understandSubview === "implementation" ? "active" : ""} disabled={!observation.observed_revision} onClick={() => void chooseUnderstandSubview("implementation")}><span>Implementation map</span><small>UA code and dependencies</small></button></div>
-      <button className="update-understanding" disabled={refreshJob?.status === "queued" || refreshJob?.status === "running"} onClick={() => void updateUnderstanding()}>
-        {refreshJob?.status === "queued" ? "Update queued" : refreshJob?.status === "running" ? "Updating understanding…" : "Update understanding"}
-        <b aria-hidden="true">↻</b>
-      </button>
-      {refreshJob && <span className={`refresh-status ${refreshJob.status}`} title={refreshJob.error ?? refreshJob.fallback_reason ?? ""}>
-        {refreshJob.status === "completed" ? `${refreshJob.mode} · ${refreshJob.changed_files.length} changed` : refreshJob.status}
-      </span>}
+      <div className="refresh-observer" aria-live="polite">
+        <small>Scans run through your Agent</small>
+        {refreshJob && <span className={`refresh-status ${refreshJob.status}`} title={refreshJob.error ?? refreshJob.fallback_reason ?? ""}>
+          {refreshJob.status === "completed" ? `${refreshJob.mode} · ${refreshJob.changed_files.length} changed` : refreshJob.status.replace("_", " ")}
+        </span>}
+      </div>
     </nav>}
     {!(mode === "understand" && understandSubview === "implementation") && <nav className={`mobile-pane-tabs ${mode}`} aria-label="Workspace area">
       <button className={mobilePane === "functions" ? "active" : ""} onClick={() => setMobilePane("functions")}>{mode === "understand" ? "Functions" : "Expected"}</button>
@@ -480,31 +487,29 @@ export default function App() {
           onReadDiff={readTargetDiff}
           onCreateContext={buildImplementationContext}
           onStartNew={() => void startTargetDesign()}
-          startPending={designStartPending}
           onViewBaseline={(revisionId, nodeId) => void openBaselineImplementation(revisionId, nodeId)}
         />
       : <TargetDesignEmpty
-          hasObservation={Boolean(observation.observed_revision)}
-          pending={designStartPending}
+          canStart={Boolean(projectState?.allowed_next_actions.includes("start_structure_design"))}
           onCreate={() => void startTargetDesign()}
         />}
   </div>;
 }
 
-function TargetDesignEmpty({ hasObservation, pending, onCreate }: { hasObservation: boolean; pending: boolean; onCreate: () => void }) {
+function TargetDesignEmpty({ canStart, onCreate }: { canStart: boolean; onCreate: () => void }) {
   return <main className="target-design-empty">
     <section>
       <span className="empty-kicker">Independent target space</span>
       <h1>Design what should exist next.</h1>
       <p>The target starts as a value clone of one named current-system revision. From then on it advances through its own immutable <code>des-*</code> revisions; changing it never changes the code-derived view.</p>
-      <button disabled={pending} onClick={onCreate}>{pending ? "Updating the baseline…" : hasObservation ? "Update baseline and start design" : "Generate current structure and start"}<b>→</b></button>
+      <button disabled={!canStart} onClick={onCreate}>{canStart ? "Start from the scanned baseline" : "Ask your Agent to update understanding"}<b>→</b></button>
     </section>
   </main>;
 }
 
 function TargetDesignWorkspace({
   view, mobilePane, onApply, onOpenRevision, onReadDiff, onCreateContext, onStartNew,
-  startPending, onViewBaseline,
+  onViewBaseline,
 }: {
   view: TargetDesignView;
   mobilePane: "functions" | "structure" | "details";
@@ -513,7 +518,6 @@ function TargetDesignWorkspace({
   onReadDiff: () => Promise<StructureDesignDiff>;
   onCreateContext: (diffDigest: string) => Promise<ImplementationContextResult>;
   onStartNew: () => void;
-  startPending: boolean;
   onViewBaseline: (revisionId: string, nodeId: string) => void;
 }) {
   const revision = view.revision;
@@ -596,7 +600,7 @@ function TargetDesignWorkspace({
         ], `Add expected function “${name}” and its initial target Responsibility.`);
       }} />
       <div className="design-provenance"><span>Separate truth coordinate</span><label>Revision<select value={revision.id} onChange={(event) => onOpenRevision(event.target.value)}>{view.revisions.map((item, index) => <option value={item.id} key={item.id}>{index === 0 ? "Current · " : "History · "}{item.id.slice(0, 16)}</option>)}</select></label><small>{revision.created_by} · {revision.rationale}</small>
-        {view.workspace.status !== "draft" && <button className="new-design-action" disabled={startPending} onClick={onStartNew}>{startPending ? "Updating baseline…" : "Update baseline and start another design"}</button>}
+        {view.workspace.status !== "draft" && <button className="new-design-action" onClick={onStartNew}>Start another design from the scanned baseline</button>}
       </div>
     </aside>
 
@@ -821,7 +825,7 @@ function UaImplementationMap({ coordinate, session, focus, originSemanticId, onR
   }, [session?.expires_at]);
 
   if (!revision || !coordinate.ua_snapshot) return <main className="observation-empty"><section>
-    <span className="empty-kicker">Implementation map unavailable</span><h1>Update understanding first.</h1>
+    <span className="empty-kicker">Implementation map unavailable</span><h1>Ask your Agent to update understanding.</h1>
     <p>The UA Dashboard opens only against a validated immutable code and graph coordinate.</p>
   </section></main>;
 
@@ -862,7 +866,7 @@ function UnderstandingWorkspace({
     <section>
       <span className="empty-kicker">No verified current model</span>
       <h1>Generate the view from code.</h1>
-      <p>Choose <strong>Update understanding</strong> above. CoIntent will capture code, run the pinned Understand Anything engine, validate the result, and publish a read-only current model. A design draft is never shown here as current code.</p>
+      <p>Ask your connected Agent to update understanding. It will freeze the code coordinate, run native Understand Anything where the repository is available, and publish only after central validation. This page never accepts code or graph uploads, and a design draft is never shown here as current code.</p>
     </section>
   </main>;
 

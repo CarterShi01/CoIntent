@@ -11,8 +11,14 @@ def test_contexture_graph_exposes_compact_on_demand_product_surface(tmp_path, mo
 
     assert refs == {
         "cointent/project-context/list-projects",
+        "cointent/project-context/register-project",
         "cointent/project-context/inspect-project-state",
+        "cointent/distribution/prepare-ua-installation",
+        "cointent/distribution/verify-ua-installation",
         "cointent/understand-current/refresh-current-understanding",
+        "cointent/understand-current/prepare-native-refresh",
+        "cointent/understand-current/prepare-refresh-artifacts",
+        "cointent/understand-current/complete-native-refresh",
         "cointent/understand-current/inspect-understanding-refresh",
         "cointent/understand-current/read-current-level",
         "cointent/design-future/start-structure-design",
@@ -38,6 +44,18 @@ def test_contexture_graph_exposes_compact_on_demand_product_surface(tmp_path, mo
         "project_id", "focus_id", "observed_revision_id",
     }
     assert set(schemas["refresh-current-understanding"]["properties"]) == {"project_id"}
+
+    design_skill = compiled.server().surface.tree.open("cointent/design-future/design-structure-first")
+    design_uses = {item["ref"] for item in design_skill["uses"]}
+    assert {
+        "cointent/distribution/prepare-ua-installation",
+        "cointent/distribution/verify-ua-installation",
+        "cointent/understand-current/refresh-current-understanding",
+        "cointent/understand-current/prepare-native-refresh",
+        "cointent/understand-current/prepare-refresh-artifacts",
+        "cointent/understand-current/complete-native-refresh",
+        "cointent/design-future/start-structure-design",
+    } <= design_uses
 
     design = compiled.server().surface.tree.open("cointent/design-future")
     revise_schema = {tool["name"]: tool["input_schema"] for tool in design["tools"]}["revise-structure-design"]

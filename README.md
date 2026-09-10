@@ -6,6 +6,12 @@ CoIntent is an Agent-native, on-demand system with two explicit processes: under
 
 The repository contains the working **0.3 design MVP** plus the implemented **0.4 on-demand understanding and structure-first design loop**. The canonical product flow is “understand on demand, design on demand”: refresh only when a user asks to understand or starts design; expose one web-equivalent semantic level to an Agent at a time; keep target drawings as history; and never trigger analysis merely because code development finished. Version 0.4 uses only Understand Anything and intentionally has no multi-engine adapter framework.
 
+The next production topology is fixed by ADR-0002 through ADR-0005: official UA Skills run natively in the Agent
+environment that can access the code; CoIntent MCP is the sole Agent control plane; refresh-scoped signed HTTPS
+transfers large artifacts without a CoIntent local client; and the central service validates an exact clean Git
+coordinate before publishing immutable current truth. The former server-local checkout/headless-worker path has
+been removed from normal product use.
+
 ## The model
 
 ```text
@@ -58,15 +64,17 @@ real code-derived graph. Comparing that later graph with a historical drawing is
 
 The browser uses authenticated HTTP for CoIntent pages, immutable UA artifacts, exact-snapshot source, and the
 embedded UA Dashboard. Conversational and coding Agents use CoIntent MCP. No UA MCP server is required or
-exposed. The compact Agent Role graph has `project-context`, `understand-current`, and `design-future`; a hidden
-service Role owns native UA publication. Ordinary callers may request a refresh but can never upload graph
-content.
+exposed. The compact Agent Role graph has `project-context`, `distribution`, `understand-current`, and
+`design-future`. A refresh-scoped state machine lets the code-local Agent stage opaque native artifacts, but only
+server validation and projection can publish an Observation. There is no general graph upload or replacement API.
 
 The scanner only records deterministic repository facts. An Agent interprets those facts and stages semantic changes; observed code never silently becomes accepted design truth.
 
 ## Quick start
 
-Requirements: Git, Python 3.11+, [uv](https://docs.astral.sh/uv/), and Node.js 22+ to build the pinned UA Dashboard.
+Server requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), and Node.js 22+ to build the pinned UA
+Dashboard. The code-local Agent needs Git, Node.js 22+, pnpm 10+, outbound HTTPS, and one of UA's verified native
+Skill environments.
 
 ```bash
 uv sync --extra dev
@@ -75,36 +83,6 @@ npm --prefix web install
 # Build the official UA 2.9.6 Dashboard at its pinned Git commit, with the
 # small CoIntent same-origin data/focus bridge applied at exact source anchors.
 scripts/build-ua-viewer.sh
-
-# Legacy backend-only scan and optional 0.3 design seed.
-uv run cointent scan /path/to/idea-factory \
-  --project-id idea-factory \
-  --name "Idea Factory" \
-  --seed-idea-factory
-
-# 0.4: capture every tracked file for the exact UA analysis coordinate.
-uv run cointent scan /path/to/idea-factory \
-  --project-id idea-factory \
-  --name "Idea Factory" \
-  --scope full
-
-# After pinned Understand Anything 2.9.6 has generated its JSON artifacts:
-uv run cointent import-understand-anything \
-  --project-id idea-factory \
-  --code-snapshot-id snapshot-... \
-  --knowledge-graph /path/to/idea-factory/.ua/knowledge-graph.json \
-  --domain-graph /path/to/idea-factory/.ua/domain-graph.json \
-  --ua-tool-revision 5feed1f2ce4f9c368d860f4c0ebc36d98a4693fc
-
-# Bind the trusted clean checkout used by on-demand refresh jobs.
-uv run cointent bind-checkout --project-id idea-factory /path/to/idea-factory
-
-# Configure a trusted non-interactive Agent runtime which has the pinned UA
-# skills installed. This is JSON argv, not a shell command.
-export COINTENT_UA_AGENT_COMMAND_JSON='["your-headless-agent","--print"]'
-
-# Run the persistent trusted worker as a separate service process.
-uv run cointent refresh-worker --forever
 
 # Contexture MCP plus authenticated browser HTTP surface.
 # Set COINTENT_UA_VIEWER_ROOT if the built viewer is deployed outside
@@ -115,22 +93,24 @@ uv run cointent serve
 npm --prefix web run dev
 ```
 
-Open `http://127.0.0.1:5175`. The backend listens on `127.0.0.1:8811`. A local MCP client can use `uv run cointent mcp` over stdio.
+Open `http://127.0.0.1:5175`. The backend listens on `127.0.0.1:8811`. Connect the coding Agent to its Streamable
+HTTP MCP endpoint. Normal users install and scan through that Agent; they do not install a CoIntent client.
 
-Re-running `scan` creates an incremental snapshot and compares it with the previous one. The target repository is read-only. Untracked files are omitted unless `--include-untracked` is explicitly supplied. UA import requires a `--scope full` snapshot and validates commit, paths, graph references, line ranges, and structural corroboration before publishing an observed revision.
-
-The operator import remains available for recovery and migration. Normal product use queues the implemented
-on-demand runner. Its first run uses `/understand --full`; subsequent changed runs use Understand Anything's
-default incremental mode, and unchanged code skips both UA and domain analysis. Domain analysis is full when UA
-runs. Each job reports its selected mode, changed files, analyzer files, fallback reason, diagnostics, duration,
-and exact published coordinates.
+In conversation, ask CoIntent to install/verify UA when needed and then ask to update understanding. The Agent
+freezes a clean default-branch commit, uses the official native UA Skills in a detached worktree, restores the
+central checkpoint when compatible, and transfers opaque bundles through short-lived URLs issued by MCP. No
+graph or source bytes pass through the model. A matching commit skips UA; a valid checkpoint selects incremental
+UA; missing or incompatible state declares a full fallback. Complete server validation is required before the
+visible Observation advances.
 
 ## Agent MCP capabilities
 
 The canonical public 0.4 surface is intentionally small:
 
-- `project-context` — list projects and inspect current coordinates, staleness, drawings, and next actions;
-- `understand-current` — request/inspect a refresh and read one page-equivalent current level;
+- `project-context` — register/list projects and inspect current coordinates, staleness, drawings, and next actions;
+- `distribution` — obtain and verify the official native UA installation for the current Agent environment;
+- `understand-current` — request, execute, transfer, complete, and inspect an on-demand refresh, then read one
+  page-equivalent current level;
 - `design-future` — start, read, revise, diff, and finalize a structure drawing, inspect its history, and optionally
   compare it with later observed reality.
 
@@ -166,7 +146,10 @@ projects/<project-id>/
 ├── project.json
 ├── design/v000001.json
 ├── snapshots/<snapshot-id>.json
+├── source-blobs/<sha256>
 ├── understand-anything/<ua-snapshot-id>.json
+├── ua-checkpoints/<sha256>.tar.gz
+├── refresh-staging/<refresh-id>/
 ├── observed/<observed-revision-id>.json
 └── target-design/<workspace-id>/
     ├── workspace.json
@@ -179,7 +162,8 @@ projects/<project-id>/
     └── verification-decisions/<verification-decision-id>.json
 ```
 
-This gives the application reliable concurrency and query behavior while keeping its durable model portable and diffable.
+SQLite owns transactional coordinates, transfer state, and current pointers; large immutable/checkpoint/source
+bytes live under the central asset root. They form one backup and restore unit.
 
 ## Verification
 
@@ -194,6 +178,11 @@ npm --prefix web run build
 - [on-demand product flow and MCP surface](docs/on-demand-product-flow.md)
 - [Understand Anything Dashboard integration](docs/ua-dashboard-integration.md)
 - [Understand Anything decision](docs/adr-0001-codemap-engine.md)
+- [native UA distribution](docs/adr-0002-native-ua-distribution.md)
+- [MCP control and artifact data plane](docs/adr-0003-mcp-control-and-artifact-data-plane.md)
+- [Observation provenance](docs/adr-0004-observation-provenance.md)
+- [central UA incremental state](docs/adr-0005-central-ua-state.md)
+- [native UA Agent runbook](docs/native-ua-agent-runbook.md)
 - [0.4 execution path](docs/implementation-v0.4.md)
 - [0.3 detailed design](docs/design-v0.3.md)
 - [modeling method and prior-art boundaries](docs/method.md)
@@ -207,9 +196,9 @@ CoIntent pins Contexture to the exact latest upstream `master` commit available 
 
 ## Scope
 
-Version 0.4 now delivers the compact scoped Agent MCP contract, persistent incremental UA runner, trusted code →
+Version 0.4 now delivers the compact scoped Agent MCP contract, native-Agent incremental UA protocol, trusted code →
 UA → observed structure path, first-class `ImplementationRef` mappings, evidence-bounded recursive expansion,
 independent target drawings, exact diff-bound implementation contexts, and the directly embedded official UA
-Dashboard with forward/reverse semantic focus. Production installation of a headless Agent command with pinned UA
-skills, an Idea Factory coverage review, and rollout remain deployment work. Infrastructure topology remains out
-of scope.
+Dashboard with forward/reverse semantic focus. The server-local checkout/headless-worker path has been removed;
+production rollout still requires an Idea Factory acceptance scan, deployment secrets/TLS, retention policy, and
+the supported Agent/platform compatibility matrix.

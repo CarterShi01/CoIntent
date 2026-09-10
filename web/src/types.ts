@@ -440,7 +440,7 @@ export type TargetDesignOperation =
 export interface UnderstandingRefreshJob {
   id: string;
   project_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "awaiting_upload" | "validating" | "completed" | "failed";
   mode: "unchanged" | "incremental" | "full" | null;
   requested_by: string;
   changed_files: string[];
@@ -448,6 +448,11 @@ export interface UnderstandingRefreshJob {
   fallback_reason: string | null;
   diagnostics: string[];
   repository_revision: string | null;
+  repository_branch: string | null;
+  repository_identity: string | null;
+  base_observed_revision_id: string | null;
+  analysis_profile_digest: string | null;
+  checkpoint_base_revision: string | null;
   code_snapshot_id: string | null;
   ua_snapshot_id: string | null;
   observed_revision_id: string | null;
@@ -456,6 +461,7 @@ export interface UnderstandingRefreshJob {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  lease_expires_at: string | null;
 }
 
 export interface ProjectState {

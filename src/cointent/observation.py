@@ -50,6 +50,8 @@ class UAProject(UARecord):
 
 
 class UANode(UARecord):
+    # UA 2.9.6 deliberately preserves analyzer-specific node extensions.
+    model_config = ConfigDict(extra="allow", alias_generator=_camel, populate_by_name=True)
     id: str
     type: NodeType
     name: str
