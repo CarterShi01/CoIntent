@@ -903,6 +903,16 @@ function UnderstandingWorkspace({
   mobilePane: "functions" | "structure" | "details";
 }) {
   const revision = coordinate.observed_revision;
+  const [structureSearch, setStructureSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [forwardNodeIds, setForwardNodeIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setStructureSearch("");
+    setSearchOpen(false);
+    setForwardNodeIds([]);
+  }, [revision?.id]);
+
   if (!revision) return <main className="observation-empty">
     <section>
       <span className="empty-kicker">No verified current model</span>
@@ -936,17 +946,52 @@ function UnderstandingWorkspace({
   } : undefined;
   const lineage: Responsibility[] = [];
   let cursor: Responsibility | undefined = selected;
-  while (cursor) {
+  const lineageIds = new Set<string>();
+  while (cursor && !lineageIds.has(cursor.id)) {
+    lineageIds.add(cursor.id);
     lineage.unshift(cursor);
     const parentId = parentById.get(cursor.id);
     cursor = parentId ? byId.get(parentId) : undefined;
+  }
+  const normalizedSearch = structureSearch.trim().toLocaleLowerCase();
+  const searchTerms = normalizedSearch.split(/\s+/).filter(Boolean);
+  const searchResults = searchTerms.length ? revision.responsibilities.filter((item) => {
+    const title = item.name.toLocaleLowerCase();
+    return searchTerms.every((term) => title.includes(term));
+  }).slice(0, 10) : [];
+
+  function selectStructureNode(id: string) {
+    if (!byId.has(id)) return;
+    setForwardNodeIds([]);
+    setSearchOpen(false);
+    onSelect(id);
+  }
+
+  function jumpToAncestor(index: number) {
+    const target = lineage[index];
+    if (!target || target.id === selected?.id) return;
+    setForwardNodeIds(lineage.slice(index + 1).map((item) => item.id));
+    onSelect(target.id);
+  }
+
+  function goBackOneLevel() {
+    if (!selected || lineage.length < 2) return;
+    setForwardNodeIds((current) => [selected.id, ...current]);
+    onSelect(lineage[lineage.length - 2].id);
+  }
+
+  function goForwardOneLevel() {
+    const [next, ...remaining] = forwardNodeIds;
+    if (!next || !byId.has(next)) return;
+    setForwardNodeIds(remaining);
+    onSelect(next);
   }
 
   return <main className="workspace observed-workspace" data-mobile-pane={mobilePane}>
     <aside className="spec-pane capability-pane">
       <div className="pane-heading"><span className="eyebrow">What the code does</span><h2>System functions</h2><p>Generated from source evidence through Understand Anything. Select a function to inspect its implemented flow.</p></div>
       <div className="spec-columns"><span>Observed function</span><span>Proof</span></div>
-      <div className="spec-tree">{functions.map((item) => <button key={item.id} className={`spec-row ${selected?.id === item.responsibility_id ? "selected" : ""}`} onClick={() => onSelect(item.responsibility_id)}>
+      <div className="spec-tree">{functions.map((item) => <button key={item.id} className={`spec-row ${selected?.id === item.responsibility_id ? "selected" : ""}`} onClick={() => selectStructureNode(item.responsibility_id)}>
         <span className="tree-mark">◆</span><span><strong>{item.name}</strong><small>{item.description}</small></span><em title={`${item.evidence_count} source bindings`}>{item.evidence_count}</em>
       </button>)}</div>
       <div className="observation-proof"><span>Immutable coordinate</span><code>{revision.id}</code><small>{revision.responsibilities.length} verified responsibilities · {revision.diagnostics.length} diagnostics</small></div>
@@ -954,7 +999,42 @@ function UnderstandingWorkspace({
 
     <section className="logic-pane observed-logic">
       <div className="logic-head">
-        <nav className="breadcrumbs" aria-label="Observed structure path">{lineage.map((item, index) => <span key={item.id}>{index > 0 && <i>›</i>}<button onClick={() => onSelect(item.id)}>{item.name}</button></span>)}</nav>
+        <div className="observed-pathbar">
+          <nav className="breadcrumbs" aria-label="Observed structure path">{lineage.map((item, index) => <span key={item.id}>{index > 0 && <i>›</i>}<button onClick={() => jumpToAncestor(index)} aria-current={item.id === selected?.id ? "location" : undefined}>{item.name}</button></span>)}</nav>
+          <div className="structure-search">
+            <span className="structure-search-icon" aria-hidden="true">⌕</span>
+            <input
+              type="search"
+              value={structureSearch}
+              placeholder="Search structure titles"
+              aria-label="Search structure titles"
+              aria-expanded={searchOpen && Boolean(normalizedSearch)}
+              aria-controls="structure-search-results"
+              onFocus={() => setSearchOpen(true)}
+              onBlur={() => setSearchOpen(false)}
+              onChange={(event) => { setStructureSearch(event.target.value); setSearchOpen(true); }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") { setStructureSearch(""); setSearchOpen(false); }
+                if (event.key === "Enter" && searchResults[0]) selectStructureNode(searchResults[0].id);
+              }}
+            />
+            {normalizedSearch && searchOpen && <div className="structure-search-results" id="structure-search-results" role="listbox">
+              {searchResults.length ? searchResults.map((item) => {
+                const parent = parentById.get(item.id);
+                return <button key={item.id} role="option" aria-selected={item.id === selected?.id} onMouseDown={(event) => event.preventDefault()} onClick={() => { setStructureSearch(item.name); selectStructureNode(item.id); }}>
+                  <span>{parent ? byId.get(parent)?.name ?? "Structure" : "Root"}</span>
+                  <strong>{item.name}</strong>
+                  <small>{item.workflow?.nodes.length ?? 0} child node{(item.workflow?.nodes.length ?? 0) === 1 ? "" : "s"}</small>
+                </button>;
+              }) : <p>No structure title matches “{structureSearch.trim()}”.</p>}
+            </div>}
+          </div>
+          <nav className="observed-navigation" aria-label="Structure navigation">
+            <button disabled={lineage.length < 2} onClick={() => jumpToAncestor(0)} title="Return to structure root"><span aria-hidden="true">⌂</span> Root</button>
+            <button disabled={lineage.length < 2} onClick={goBackOneLevel} title="Exit one level"><span aria-hidden="true">←</span> Back</button>
+            <button disabled={!forwardNodeIds.length} onClick={goForwardOneLevel} title="Re-enter the next level">Forward <span aria-hidden="true">→</span></button>
+          </nav>
+        </div>
         <div className="logic-title"><div><span className="eyebrow">Implemented responsibility</span><h1>{selected?.name ?? "No verified structure"}</h1></div><div className="observed-title-actions">
           <span className="read-only-seal">Read only<br /><b>Code-derived</b></span>
           <button className="refine-action" disabled={!selected || expansionNotice?.tone === "working"} onClick={() => selected && onExpand(selected.id)}>
@@ -973,15 +1053,18 @@ function UnderstandingWorkspace({
       </div>
       <div className="observed-flow">
         <div className="workflow-toolbar"><div><span className="eyebrow">Current structure</span><strong>{children.length ? "Select a node to inspect or descend" : "Evidence-backed leaf"}</strong></div><div className="legend"><span><i className="line normal" />{revision.refinement ? "UA structure" : "UA order"}</span></div></div>
-        {children.length ? <div className="observed-node-row">{children.map((node, index) => <div className="observed-node-wrap" key={node.id}>
-          {index > 0 && <span className={`observed-connector ${revision.refinement ? "structural" : ""}`} aria-hidden="true">{revision.refinement ? "·" : "→"}</span>}
-          <button className="observed-node-card" onClick={() => onSelect(node.id)}><span>{node.source_ids[0]?.split(":", 1)[0] ?? "responsibility"}</span><strong>{node.name}</strong><p>{node.description}</p><small>{evidenceBySubject.get(node.id)?.length ?? 0} source binding{(evidenceBySubject.get(node.id)?.length ?? 0) === 1 ? "" : "s"} <b>→</b></small></button>
-        </div>)}</div> : <div className="leaf-stage"><div className="leaf-symbol"><span /><i /><b /></div><span className="eyebrow">Verified leaf</span><h2>{selected?.name}</h2><p>This is the deepest imported semantic level. Use its source bindings to inspect the implementation.</p></div>}
+        {children.length ? <div className="observed-node-row">{children.map((node, index) => {
+          const isLeaf = !(node.workflow?.nodes.length);
+          return <div className="observed-node-wrap" key={node.id}>
+            {index > 0 && <span className={`observed-connector ${revision.refinement ? "structural" : ""}`} aria-hidden="true">{revision.refinement ? "·" : "→"}</span>}
+            <button className={`observed-node-card ${isLeaf ? "leaf" : "branch"}`} onClick={() => selectStructureNode(node.id)}><span>{isLeaf ? "leaf" : node.source_ids[0]?.split(":", 1)[0] ?? "responsibility"}</span><strong>{node.name}</strong><p>{node.description}</p><small>{isLeaf ? "View leaf details" : `${node.workflow?.nodes.length ?? 0} child nodes`} <b>→</b></small></button>
+          </div>;
+        })}</div> : <div className="leaf-stage" aria-live="polite"><div className="leaf-symbol"><span /><i /><b /></div><span className="eyebrow">Selected leaf</span><h2>{selected?.name}</h2><p>The detail panel now shows this leaf's evidence and implementation. Use Back to return to its parent.</p></div>}
       </div>
     </section>
 
     <aside className="inspector observed-inspector">
-      <div className="inspector-heading"><span className="eyebrow">Why this is shown</span><h2>Source evidence</h2><code>{selected?.source_ids[0]}</code></div>
+      <div className="inspector-heading"><span className="eyebrow">{children.length ? "Selected responsibility" : "Selected leaf"}</span><h2>{selected?.name ?? "Node details"}</h2><p className="inspector-summary">{selected?.description}</p><span className="inspector-source-label">Source evidence</span><code>{selected?.source_ids[0]}</code></div>
       <section className="implementation-ref-block"><div className="section-title"><div><span className="eyebrow">Code map bridge</span><h3>Implementation references</h3></div><strong>{selectedRefs.length}</strong></div>
         {selectedRefs.length ? selectedRefs.map((item) => <article className="implementation-ref" key={item.id}>
           <div><span className={item.role}>{item.role}</span><small>{item.resolution.replaceAll("_", " ")}</small></div>
