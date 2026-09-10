@@ -20,12 +20,26 @@ need npm
 need ssh
 need rsync
 need curl
+need sha256sum
 cd "$ROOT"
 [ -d "$EXPERIMENT_REPOSITORY/.git" ] || die "Idea Factory checkout not found: $EXPERIMENT_REPOSITORY"
 
 log "local quality gates"
 uv run --extra dev pytest
 npm --prefix web run build
+
+log "verify pinned UA Dashboard release asset"
+ua_commit="$(sed -n 's/^UA_COMMIT=\([0-9a-f]\{40\}\)$/\1/p' scripts/build-ua-viewer.sh)"
+[ -n "$ua_commit" ] || die "cannot resolve pinned UA Dashboard commit"
+bridge_patch_sha="$(sha256sum scripts/patch-ua-viewer.mjs | cut -d' ' -f1)"
+viewer_marker="web/ua-viewer-dist/COINTENT-INTEGRATION.txt"
+if [ ! -f "$viewer_marker" ] \
+   || ! grep -qx "upstream_commit=$ua_commit" "$viewer_marker" \
+   || ! grep -qx "bridge_patch_sha256=$bridge_patch_sha" "$viewer_marker" \
+   || ! grep -qx 'integration_protocol=1' "$viewer_marker"; then
+  scripts/build-ua-viewer.sh
+fi
+[ -f web/ua-viewer-dist/index.html ] || die "pinned UA Dashboard build is missing index.html"
 
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$fixture_dir"' EXIT

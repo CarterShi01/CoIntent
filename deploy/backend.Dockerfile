@@ -16,6 +16,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --no-install-package contexture-mcp \
     && uv pip install --python .venv/bin/python --no-deps /tmp/contexture/contexture_mcp-*.whl
 COPY src ./src
+# The release script builds this from the pinned official UA commit and verifies
+# its integration marker before the Docker context is sent to the deployment host.
+COPY web/ua-viewer-dist ./web/ua-viewer-dist
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-package contexture-mcp \
     && uv pip install --python .venv/bin/python --no-deps /tmp/contexture/contexture_mcp-*.whl \
@@ -23,5 +26,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && rm -rf /tmp/contexture
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    COINTENT_UA_VIEWER_ROOT=/app/web/ua-viewer-dist
 ENTRYPOINT ["cointent"]

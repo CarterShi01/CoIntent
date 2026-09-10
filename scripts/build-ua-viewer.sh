@@ -9,6 +9,7 @@ BACKUP_DIR="$ROOT_DIR/web/ua-viewer-dist.previous"
 UA_COMMIT=5feed1f2ce4f9c368d860f4c0ebc36d98a4693fc
 NODE_BIN=${COINTENT_NODE_BIN:-node}
 COREPACK_JS=$(readlink -f "$(command -v corepack)")
+BRIDGE_PATCH_SHA=$(sha256sum "$ROOT_DIR/scripts/patch-ua-viewer.mjs" | cut -d' ' -f1)
 
 NODE_MAJOR=$($NODE_BIN -p 'process.versions.node.split(".")[0]')
 if (( NODE_MAJOR < 22 )); then
@@ -40,6 +41,7 @@ cp "$BUILD_DIR/ua/LICENSE" "$STAGING_DIR/UNDERSTAND-ANYTHING-LICENSE.txt"
 printf '%s\n' \
   'Understand Anything 2.9.6' \
   "upstream_commit=$UA_COMMIT" \
+  "bridge_patch_sha256=$BRIDGE_PATCH_SHA" \
   'integration_protocol=1' > "$STAGING_DIR/COINTENT-INTEGRATION.txt"
 
 rm -rf "$BACKUP_DIR"

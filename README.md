@@ -117,6 +117,10 @@ The canonical public 0.4 surface is intentionally small:
 The exact operations and Role instructions are specified in the
 [on-demand product flow and MCP surface](docs/on-demand-product-flow.md).
 
+The Beijing release verifies or rebuilds the pinned UA Dashboard, packages it with the backend, and proxies
+`/ua-viewer` plus the narrow `/internal/` viewer/refresh data plane. The latter disables proxy request buffering
+and raises the request-size ceiling for digest-bound native refresh archives; it is not a general upload API.
+
 Migration-era 0.3 capabilities remain available to the browser compatibility surface, but are not compiled into
 the public MCP server:
 
