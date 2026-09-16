@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from cointent.distribution import UA_REVISION, UA_VERSION
+from cointent.distribution import PRIVATE_UNDERSTAND_MANIFEST, UA_REVISION, UA_VERSION
 from cointent.remote_refresh import (
     ArtifactUploadSpec,
     NativeRefreshPreflight,
@@ -32,9 +32,13 @@ def commit_source(root: Path, content: str) -> str:
 
 
 def preflight(revision: str) -> NativeRefreshPreflight:
+    runtime_root = f"/home/test/.cointent/runtime/ua/{UA_REVISION}"
     return NativeRefreshPreflight(
         repository="git@example.test/demo.git", revision=revision, branch="master", clean=True,
         ua_version=UA_VERSION, ua_revision=UA_REVISION,
+        private_runtime_root=runtime_root,
+        private_understand_manifest=f"{runtime_root}/{PRIVATE_UNDERSTAND_MANIFEST}",
+        global_skill_catalog_checked=True,
     )
 
 
@@ -43,6 +47,20 @@ def test_repository_identity_normalizes_common_git_transports() -> None:
     assert canonical_repository_identity("https://github.com/CarterShi01/idea-factory") == expected
     assert canonical_repository_identity("git@github.com:CarterShi01/idea-factory.git") == expected
     assert canonical_repository_identity("ssh://git@github.com/CarterShi01/idea-factory.git") == expected
+
+
+def test_native_refresh_preflight_rejects_global_ua_skill_links() -> None:
+    with pytest.raises(ValueError, match="global Skill links"):
+        NativeRefreshPreflight(
+            repository="git@example.test/demo.git", revision="a" * 40, branch="master", clean=True,
+            ua_version=UA_VERSION, ua_revision=UA_REVISION,
+            private_runtime_root=f"/home/test/.cointent/runtime/ua/{UA_REVISION}",
+            private_understand_manifest=(
+                f"/home/test/.cointent/runtime/ua/{UA_REVISION}/{PRIVATE_UNDERSTAND_MANIFEST}"
+            ),
+            global_skill_catalog_checked=True,
+            global_ua_skill_links=["/home/test/.agents/skills/understand"],
+        )
 
 
 def make_bundles(root: Path, revision: str, content: str) -> tuple[Path, Path]:
@@ -137,6 +155,10 @@ def test_remote_native_refresh_full_unchanged_and_incremental_without_server_che
     plan = prepare_native_refresh(repository, requested["job"]["id"], preflight(first_revision))
     assert plan["execution"]["mode"] == "full"
     assert plan["execution"]["checkpoint"] is None
+    private_execution = plan["execution"]["private_ua_execution"]
+    assert private_execution["manifests"]["understand"].endswith(PRIVATE_UNDERSTAND_MANIFEST)
+    assert "active refresh lease" in private_execution["authorization"]
+    assert "host-discovered" in private_execution["catalog_policy"]
     upload_declared(repository, requested["job"]["id"], make_bundles(tmp_path, first_revision, first_content), "full")
     completed = complete_native_refresh(repository, requested["job"]["id"])
     assert completed["status"] == "completed"

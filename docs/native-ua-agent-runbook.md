@@ -12,11 +12,12 @@ MCP and its local shell.
 1. Read the repository's canonical origin, current default branch, and preferred output language.
 2. Call `project-context/register-project`. Do not upload code during registration.
 3. If native UA is absent or uncertain, call `distribution/prepare-ua-installation` using facts detected by the
-   Agent, execute the returned official commands, reload the Agent host, measure the checks, and call
-   `distribution/verify-ua-installation`.
+   Agent, execute the returned private-runtime commands, reload the Agent host, measure the private manifest and
+   the absence of global `understand*` links, and call `distribution/verify-ua-installation`.
 4. Do not continue until verification returns `ready`.
 
-Installation and project registration never require a CoIntent executable or browser form.
+The private runtime is not a host Skill installation. Before explicit CoIntent activation, do not read or invoke
+its manifests. Installation and project registration never require a CoIntent executable or browser form.
 
 ## 2. Start an on-demand refresh
 
@@ -29,8 +30,9 @@ Installation and project registration never require a CoIntent executable or bro
    - any tracked LFS pointer means `lfs_pointers_present=true`;
    - a tracked `.gitattributes` rule using `export-ignore` or `export-subst` means
      `archive_attributes_present=true`.
-3. Call `prepare-native-refresh(job_id, preflight)`. V1 stops before analysis if any unsupported-tree flag is
-   true; do not conceal the flag or substitute working-tree bytes.
+3. Call `prepare-native-refresh(job_id, preflight)`, including the verified private runtime root, private
+   understand manifest, and checked-empty global UA catalog. V1 stops before analysis if any unsupported-tree
+   flag is true; do not conceal the flag or substitute working-tree bytes.
 4. If the response says `unchanged`, do not invoke UA or domain analysis.
 
 Never hide dirty state by omitting untracked files. If the work the user wants to understand is not committed,
@@ -53,13 +55,15 @@ If a checkpoint URL is present:
 
 If ancestry fails, do not restore it. Run full and report `divergent_checkpoint` as the fallback reason.
 
-Set `UNDERSTAND_NO_WORKTREE_REDIRECT=1`, then invoke the installed native UA Skill against the temporary worktree.
-Use `--no-auto-update` and the output language in the execution plan. Surface UA's first-run `.understandignore`
-review and large-repository confirmation in the Agent conversation. After a changed knowledge graph, invoke the
-native domain Skill. Do not invoke the local Dashboard; CoIntent serves the pinned viewer remotely.
+Set `UNDERSTAND_NO_WORKTREE_REDIRECT=1`, then read the `private_ua_execution.manifests.understand` path returned
+by the active refresh lease and follow it against the temporary worktree. Use `--no-auto-update` and the output
+language in the execution plan. Surface UA's first-run `.understandignore` review and large-repository
+confirmation in the Agent conversation. After a changed knowledge graph, read the lease-scoped private domain
+manifest. Do not invoke the local Dashboard; CoIntent serves the pinned viewer remotely.
 
-The actual Skill invocation syntax belongs to the Agent host (`$understand`, `/understand`, native plugin action,
-or another officially supported form). CoIntent does not translate UA into a shell executable.
+These manifests are private execution resources, not `$understand`, `/understand`, or another host-discovered
+Skill. CoIntent does not translate UA into a shell executable, and the lease does not authorize their use for a
+generic code request.
 
 ## 4. Package opaque artifacts
 

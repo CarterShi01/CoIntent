@@ -6,8 +6,8 @@ CoIntent is an Agent-native, explicit-invocation system with two processes: unde
 
 The repository contains the working **0.3 design MVP** plus the implemented **0.4 on-demand understanding and structure-first design loop**. The canonical product flow is “understand on demand, design on demand”: refresh only when a user asks to understand or starts design; expose one web-equivalent semantic level to an Agent at a time; keep target drawings as history; and never trigger analysis merely because code development finished. Version 0.4 uses only Understand Anything and intentionally has no multi-engine adapter framework.
 
-The next production topology is fixed by ADR-0002 through ADR-0005: official UA Skills run natively in the Agent
-environment that can access the code; CoIntent MCP is the sole Agent control plane; refresh-scoped signed HTTPS
+The next production topology is fixed by ADR-0002 through ADR-0006: the pinned official UA checkout runs privately
+in the Agent environment that can access the code; CoIntent MCP is the sole Agent control plane; refresh-scoped signed HTTPS
 transfers large artifacts without a CoIntent local client; and the central service validates an exact clean Git
 coordinate before publishing immutable current truth. The former server-local checkout/headless-worker path has
 been removed from normal product use.
@@ -96,9 +96,11 @@ npm --prefix web run dev
 Open `http://127.0.0.1:5175`. The backend listens on `127.0.0.1:8811`. Connect the coding Agent to its Streamable
 HTTP MCP endpoint. Normal users install and scan through that Agent; they do not install a CoIntent client.
 
-In conversation, ask CoIntent to install/verify UA when needed and then ask to update understanding. The Agent
-freezes a clean default-branch commit, uses the official native UA Skills in a detached worktree, restores the
-central checkpoint when compatible, and transfers opaque bundles through short-lived URLs issued by MCP. No
+In conversation, explicitly ask CoIntent to install/verify UA when needed and then ask to update understanding.
+The Agent installs the pinned upstream checkout beneath its private CoIntent runtime; it does not register UA as
+a global host Skill. A refresh lease then names the private manifests that may be read for that one execution.
+The Agent freezes a clean default-branch commit, uses that native implementation in a detached worktree, restores
+the central checkpoint when compatible, and transfers opaque bundles through short-lived URLs issued by MCP. No
 graph or source bytes pass through the model. A matching commit skips UA; a valid checkpoint selects incremental
 UA; missing or incompatible state declares a full fallback. Complete server validation is required before the
 visible Observation advances.
@@ -183,6 +185,7 @@ npm --prefix web run build
 - [Understand Anything Dashboard integration](docs/ua-dashboard-integration.md)
 - [Understand Anything decision](docs/adr-0001-codemap-engine.md)
 - [native UA distribution](docs/adr-0002-native-ua-distribution.md)
+- [private UA runtime and Role gateway](docs/adr-0006-private-ua-runtime-and-role-gateway.md)
 - [MCP control and artifact data plane](docs/adr-0003-mcp-control-and-artifact-data-plane.md)
 - [Observation provenance](docs/adr-0004-observation-provenance.md)
 - [central UA incremental state](docs/adr-0005-central-ua-state.md)

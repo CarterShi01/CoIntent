@@ -20,6 +20,10 @@ No post-coding scan runs automatically. A later request to understand or design 
 historical target drawing may then be compared with the newly observed implementation on demand, but it is
 never merged, promoted, or copied into current truth.
 
+Native UA is a private code-local execution dependency, not a second conversational surface. The Agent host must
+not advertise `understand*` Skills globally; only an active `prepare-native-refresh` lease identifies the private
+UA manifests that may be read to execute that refresh.
+
 ```text
 CURRENT TRUTH
 Code → CodeSnapshot → Understand Anything → ObservedModelRevision
@@ -208,9 +212,10 @@ cointent
     └── compare-design-to-current
 ```
 
-The code-local Agent may stage only the two artifacts named by its active refresh lease. Staging operations cannot
-name server paths or publish graph content. The validator/projector service is the sole publisher of CodeSnapshot,
-UnderstandAnythingSnapshot, and ObservedModelRevision records.
+The code-local Agent may stage only the two artifacts named by its active refresh lease. The same lease names the
+private pinned UA manifests for that execution only. Staging operations cannot name server paths or publish graph
+content. The validator/projector service is the sole publisher of CodeSnapshot, UnderstandAnythingSnapshot, and
+ObservedModelRevision records.
 
 There is no UA Dashboard Role and no UA-specific MCP server. Agents read CoIntent's semantic current/design
 models; humans use the embedded UA frontend for full visual code-map exploration.

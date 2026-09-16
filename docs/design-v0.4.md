@@ -749,8 +749,9 @@ persisted aggregates. Exact contracts and Role instructions are normative in
 - `prepare-ua-installation(platform, operating_system)`
 - `verify-ua-installation(evidence)`
 
-Distribution preserves UA's native platform installation. It verifies the exact upstream unit and prerequisites;
-it does not compile UA Skills into CoIntent or execute commands on the MCP server.
+Distribution preserves UA's native upstream implementation in a private code-local runtime. It verifies the exact
+upstream unit, private manifest location, catalog isolation, and prerequisites; it does not compile UA Skills into
+CoIntent, register them in the host catalog, or execute commands on the MCP server.
 
 ### 7.3 Understand current
 

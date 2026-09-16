@@ -17,7 +17,12 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .distribution import UA_REVISION, UA_VERSION
+from .distribution import (
+    PRIVATE_DOMAIN_MANIFEST,
+    PRIVATE_UNDERSTAND_MANIFEST,
+    UA_REVISION,
+    UA_VERSION,
+)
 from .observation import UAKnowledgeGraph, build_ua_snapshot, project_observed_model
 from .refresh import UnderstandingRefreshJob
 from .scanner import Artifact, RepositorySnapshot, snapshot_diff
@@ -66,6 +71,10 @@ class NativeRefreshPreflight(BaseModel):
     archive_attributes_present: bool = False
     ua_version: str
     ua_revision: str
+    private_runtime_root: str
+    private_understand_manifest: str
+    global_skill_catalog_checked: bool
+    global_ua_skill_links: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_coordinate(self) -> "NativeRefreshPreflight":
@@ -73,6 +82,18 @@ class NativeRefreshPreflight(BaseModel):
             raise ValueError("repository revision must be a full lowercase Git SHA")
         if not self.repository.strip():
             raise ValueError("repository identity is required")
+        runtime_root = _normalized_local_path(self.private_runtime_root)
+        manifest = _normalized_local_path(self.private_understand_manifest)
+        if not runtime_root.endswith(f"/ua/{UA_REVISION}"):
+            raise ValueError("native UA runtime must use CoIntent's pinned private runtime path")
+        if manifest != f"{runtime_root}/{PRIVATE_UNDERSTAND_MANIFEST}":
+            raise ValueError("native UA understand manifest must be inside the private runtime")
+        if "/.agents/skills/" in manifest:
+            raise ValueError("native UA manifest must not be exposed through the global Skill catalog")
+        if not self.global_skill_catalog_checked:
+            raise ValueError("native refresh requires a checked global Skill catalog")
+        if self.global_ua_skill_links:
+            raise ValueError("native refresh requires UA global Skill links to be retired")
         return self
 
 
@@ -186,12 +207,26 @@ def prepare_native_refresh(repository: Any, job_id: str, preflight: NativeRefres
             "analysis_profile_digest": profile,
             "checkpoint": checkpoint_transfer,
             "checkpoint_base_revision": running.checkpoint_base_revision,
+            "private_ua_execution": {
+                "runtime_root": preflight.private_runtime_root,
+                "manifests": {
+                    "understand": preflight.private_understand_manifest,
+                    "understand_domain": (
+                        f"{_normalized_local_path(preflight.private_runtime_root)}/{PRIVATE_DOMAIN_MANIFEST}"
+                    ),
+                },
+                "authorization": "Read these private manifests only while executing this active refresh lease.",
+                "catalog_policy": (
+                    "Do not invoke a host-discovered understand* Skill. The host global Skill catalog must remain "
+                    "free of UA links for this CoIntent flow."
+                ),
+            },
             "instructions": [
                 "Create a detached temporary Git worktree at the exact repository revision.",
                 "If a checkpoint is supplied, verify its base commit is an ancestor, download it, and restore .ua; otherwise run full.",
                 "Set UNDERSTAND_NO_WORKTREE_REDIRECT=1.",
-                f"Run the native UA understand Skill with --no-auto-update and output language {project.get('language', 'en')}.",
-                "Run the native understand-domain Skill after a changed knowledge graph; do not launch the local Dashboard.",
+                f"Read the lease-scoped private understand manifest and run it with --no-auto-update and output language {project.get('language', 'en')}.",
+                "Read the lease-scoped private understand-domain manifest after a changed knowledge graph; do not launch the local Dashboard.",
                 "Create the documented source-snapshot and complete UA-state tar.gz bundles, then request upload capabilities.",
             ],
             "bundle_contract": {
@@ -200,6 +235,10 @@ def prepare_native_refresh(repository: Any, job_id: str, preflight: NativeRefres
             },
         },
     }
+
+
+def _normalized_local_path(value: str) -> str:
+    return value.strip().replace("\\", "/").rstrip("/")
 
 
 def prepare_refresh_artifacts(

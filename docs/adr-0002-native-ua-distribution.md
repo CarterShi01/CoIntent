@@ -1,6 +1,6 @@
 # ADR-0002: Distribute and Run Native Understand Anything in the Agent Environment
 
-**Status:** Accepted  
+**Status:** Superseded in part by ADR-0006
 **Date:** 2026-09-10  
 **Depends on:** [ADR-0001](adr-0001-codemap-engine.md)  
 **Related:** [ADR-0003](adr-0003-mcp-control-and-artifact-data-plane.md), [ADR-0004](adr-0004-observation-provenance.md), [ADR-0005](adr-0005-central-ua-state.md)
@@ -10,8 +10,8 @@
 CoIntent may run on a different machine from the repository. Understand Anything (UA) is not a standalone
 analyzer API: it is an official package of Agent Skills, supporting scripts, subagent definitions, and a
 Dashboard. Its native installer clones the upstream repository and links Skills into platform-specific Agent
-directories. The current Agent then interprets the Skill and performs analysis with its own shell, filesystem,
-and subagent capabilities.
+directories. That generic installation behavior was originally used by CoIntent, but it lets the host discover
+UA before CoIntent can apply its explicit-invocation policy.
 
 The previous CoIntent runner instead required a server-local checkout, a configured headless Agent command, and
 a persistent worker. That topology does not match the desired product: the user should connect one Agent to
@@ -27,15 +27,16 @@ administrative recovery; that executable is not part of the code-local installat
 The public root Role gains a `distribution` child. It:
 
 1. detects the MCP client and operating-system facts supplied by the Agent;
-2. returns the official native UA installation path for that supported platform;
+2. returns a private checkout plan for the official native UA unit on that code-local Agent;
 3. records no success until the Agent reports measured post-install checks;
-4. verifies the resolved Skill path, UA Git revision, plugin version, runtime prerequisites, and reload state;
+4. verifies the resolved private manifest path, UA Git revision, plugin version, runtime prerequisites, global
+   catalog isolation, and reload state;
 5. never copies UA Skill contents into a CoIntent Role or pretends to execute client-local commands itself.
 
-Claude Code continues to use the native plugin marketplace. Platforms supported by UA's installer continue to
-use the official shell or PowerShell installer. CoIntent may select an exact unmodified upstream commit after
-installation, because analyzer schema, validator, and embedded Dashboard are released as one compatibility unit.
-It may not patch analyzer behavior or silently track an unverified upstream `main`.
+ADR-0006 replaces the use of those platform installers in the CoIntent flow. CoIntent clones the exact unmodified
+upstream commit into a private code-local runtime instead; it may not patch analyzer behavior or silently track
+an unverified upstream `main`. The private checkout preserves UA implementation while preventing the installer
+from registering generic `understand*` host capabilities.
 
 The supported-unit identity is the upstream Git commit, not only a display version. A successfully installed but
 unsupported revision produces `incompatible`, not a best-effort scan.
@@ -44,13 +45,14 @@ These checks prevent accidental version/path drift; they are evidence reported b
 are not remote attestation. The trust boundary is identical to native UA execution itself.
 
 Installation state is deliberately not stored as a global CoIntent project fact: it belongs to a particular
-Agent host and can disappear when the user changes machines or agents. Each refresh resolves the local Skill and
-rechecks compatibility; SQLite stores refresh evidence and results, not a misleading permanent “UA installed” bit.
+Agent host and can disappear when the user changes machines or agents. Each refresh resolves the private local
+manifest and rechecks compatibility; SQLite stores refresh evidence and results, not a misleading permanent “UA
+installed” bit.
 
-The install plan is conditional and idempotent at the orchestration level: resolve and verify an existing native
-installation first; do not rerun the upstream installer when the compatible checkout and Skill links already
-exist. A fresh install uses the upstream installer and then selects the exact commit. Repairing an incompatible
-or colliding installation is reported explicitly rather than silently overwriting an unrelated Skill directory.
+The install plan is conditional and idempotent at the orchestration level: resolve and verify an existing private
+checkout first. A fresh install clones and detaches the exact upstream commit without creating host Skill links.
+Migration retires only known UA symbolic links, never unrelated directories or checkouts. Repairing an
+incompatible private runtime or catalog collision is reported explicitly rather than silently overwriting it.
 
 ## Capability contract
 
@@ -64,7 +66,7 @@ Skill discovery alone is insufficient. A supported execution environment must pr
 - enough session lifetime to complete a full first analysis.
 
 Installation verification has three outcomes: `ready`, `installed_reload_required`, or `incompatible`. CoIntent
-never promises that a running Agent host hot-loads newly installed Skills.
+never promises that a running Agent host forgets previously discovered Skills without a reload.
 
 ## Native behavior policy
 
