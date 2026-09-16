@@ -2,11 +2,14 @@
 
 **Status:** accepted product-experience contract
 **Applies to:** the default 0.4+ user journey and public MCP capability graph
-**Principle:** understand on demand, design on demand.
+**Principle:** explicit CoIntent/UA activation; then understand on demand or design on demand.
 
 ## 1. Product posture
 
-CoIntent is not an always-on task manager and does not require daily use. A user invokes it for one of two
+CoIntent is not an always-on task manager and does not require daily use. Its MCP surface is explicit-only: an
+Agent may route into it only when the user's current request explicitly asks to use CoIntent or Understand
+Anything (UA/UV). A generic request to inspect, understand, explain, review, design, or modify code is not
+activation and must be handled without CoIntent MCP. Once explicitly activated, a user invokes it for one of two
 reasons:
 
 1. **Understand current** — refresh and inspect what the code implements now.
@@ -214,16 +217,19 @@ models; humans use the embedded UA frontend for full visual code-map exploration
 
 Root Role instructions:
 
-1. inspect project state before selecting a coordinate;
-2. route questions about what exists to `understand-current`;
-3. enter `design-future` only after explicit design intent;
-4. refresh before creating a design and never silently rebase an existing drawing;
-5. use `distribution` only when native UA is missing or incompatible;
-6. during refresh, require a clean exact commit and transfer bytes only through issued URLs;
-7. read at most one page-equivalent level per call unless the user explicitly continues;
-8. never translate a conversation or target drawing into an observed write;
-9. stop after producing implementation context; do not trigger post-coding analysis;
-10. compare historical design and later reality only when requested.
+1. route into CoIntent only when the current user request explicitly asks to use CoIntent or Understand Anything
+   (UA/UV); generic code inspection, explanation, review, design, and modification requests do not qualify;
+2. if that activation is absent, invoke no CoIntent child Role, Skill, or Tool;
+3. inspect project state before selecting a coordinate;
+4. route questions about what exists to `understand-current`;
+5. enter `design-future` only after explicit design intent;
+6. refresh before creating a design and never silently rebase an existing drawing;
+7. use `distribution` only when native UA is missing or incompatible;
+8. during refresh, require a clean exact commit and transfer bytes only through issued URLs;
+9. read at most one page-equivalent level per call unless the user explicitly continues;
+10. never translate a conversation or target drawing into an observed write;
+11. stop after producing implementation context; do not trigger post-coding analysis;
+12. compare historical design and later reality only when requested.
 
 Two orchestration Skills encode the normal call order:
 
@@ -266,6 +272,8 @@ revision. Finalization records the authenticated initiating principal and binds 
 
 ## 9. Acceptance checks
 
+- Generic requests to inspect, understand, explain, review, design, or modify code do not route into CoIntent MCP;
+  the current request must explicitly ask to use CoIntent or Understand Anything (UA/UV).
 - A second refresh with unchanged code invokes neither UA nor the domain analyzer.
 - A second refresh with one changed file selects incremental UA mode and reports only impacted analyzer files.
 - Missing fingerprints or a failed incremental integrity gate cause a declared full fallback, never a silent one.

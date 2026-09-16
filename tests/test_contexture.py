@@ -1,6 +1,6 @@
 from contexture.server import compile_application
 
-from cointent.controller import app, legacy_app
+from cointent.controller import EXPLICIT_UA_ACTIVATION, app, legacy_app
 
 
 def test_contexture_graph_exposes_compact_on_demand_product_surface(tmp_path, monkeypatch) -> None:
@@ -63,6 +63,31 @@ def test_contexture_graph_exposes_compact_on_demand_product_surface(tmp_path, mo
     operation = revise_schema["$defs"][operation_ref.rsplit("/", 1)[-1]]
     assert "set_acceptance_criteria" in operation["properties"]["kind"]["enum"]
     assert operation["additionalProperties"] is False
+
+
+def test_public_mcp_routing_requires_an_explicit_cointent_or_ua_request(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("COINTENT_DB_PATH", str(tmp_path / "model.db"))
+    tree = compile_application(app).server().surface.tree
+
+    root = tree.open("cointent")
+    assert root["description"].startswith("Explicit-only CoIntent/UA workflow")
+    assert EXPLICIT_UA_ACTIVATION in root["instructions"]
+    assert "do not invoke any child Role, Skill, or Tool" in root["instructions"]
+
+    guarded_refs = (
+        "cointent/project-context",
+        "cointent/distribution",
+        "cointent/understand-current",
+        "cointent/design-future",
+        "cointent/understand-current/learn-current-system",
+        "cointent/design-future/design-structure-first",
+    )
+    for ref in guarded_refs:
+        node = tree.open(ref)
+        assert node["description"].startswith("Explicit-only CoIntent/UA")
+        assert EXPLICIT_UA_ACTIVATION in node["instructions"]
+
+    assert "generic request to inspect, understand, explain, review, design, or modify code" in root["instructions"]
 
 
 def test_legacy_declaration_remains_available_only_for_http_compatibility(tmp_path, monkeypatch) -> None:

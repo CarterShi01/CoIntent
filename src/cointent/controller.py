@@ -23,6 +23,13 @@ from .remote_refresh import (
 from .scanner import RepositorySnapshot
 
 
+EXPLICIT_UA_ACTIVATION = (
+    "Use this CoIntent MCP surface only when the user's current request explicitly asks to use "
+    "CoIntent or Understand Anything (UA/UV). Do not infer activation from a generic request to "
+    "inspect, understand, explain, review, design, or modify code."
+)
+
+
 class CoIntentChannels(Channels):
     def __init__(self) -> None:
         database = Path(os.environ.get("COINTENT_DB_PATH", "runtime/cointent.db"))
@@ -1070,7 +1077,9 @@ class LearnCurrentSystem(Skill):
     def __init__(self) -> None:
         super().__init__(
             name="learn-current-system",
-            description="Refresh and learn current truth one semantic page at a time.",
+            description=(
+                "Explicit-only CoIntent/UA workflow: refresh and learn current truth one semantic page at a time."
+            ),
             uses=(
                 "cointent/project-context/inspect-project-state",
                 "cointent/distribution/prepare-ua-installation",
@@ -1083,7 +1092,8 @@ class LearnCurrentSystem(Skill):
                 "cointent/understand-current/read-current-level",
             ),
             instructions=(
-                "Inspect state first. Refresh only when the user asks to understand. If refresh is required, verify "
+                f"{EXPLICIT_UA_ACTIVATION} Stop without calling any Tool when that explicit request is absent. "
+                "Inspect state first. Refresh only after explicit activation. If refresh is required, verify "
                 "native UA through distribution, freeze a clean default-branch commit, run UA in a detached local "
                 "worktree, transfer opaque artifacts through the issued URLs, and complete server validation. "
                 "Never put graph/source bytes in a tool argument or treat staging as publication. Read one "
@@ -1096,7 +1106,10 @@ class DesignStructureFirst(Skill):
     def __init__(self) -> None:
         super().__init__(
             name="design-structure-first",
-            description="Refresh, design the complete target graph, review its diff, then create coding context.",
+            description=(
+                "Explicit-only CoIntent/UA workflow: refresh, design the target graph, review its diff, then create "
+                "coding context."
+            ),
             uses=(
                 "cointent/project-context/inspect-project-state",
                 "cointent/distribution/prepare-ua-installation",
@@ -1113,7 +1126,8 @@ class DesignStructureFirst(Skill):
                 "cointent/design-future/create-implementation-context",
             ),
             instructions=(
-                "Enter only after explicit structure-design intent. Refresh first, keep the baseline immutable, "
+                f"{EXPLICIT_UA_ACTIVATION} Stop without calling any Tool when that explicit request is absent. "
+                "After activation, also require explicit structure-design intent. Refresh first, keep the baseline immutable, "
                 "revise expected functions and the complete target Responsibility/Workflow graph, and show the "
                 "exact diff before finalization. Create implementation context only after explicit confirmation. "
                 "Stop after coding context; never trigger a post-code scan."
@@ -1124,8 +1138,11 @@ class DesignStructureFirst(Skill):
 class ProjectContext(Role):
     def __init__(self) -> None:
         super().__init__(
-            name="project-context", description="Select a project and inspect its immutable coordinates.",
-            instructions="Inspect project state before selecting any current or design coordinate.",
+            name="project-context",
+            description="Explicit-only CoIntent/UA project selection and immutable-coordinate inspection.",
+            instructions=(
+                f"{EXPLICIT_UA_ACTIVATION} Inspect project state before selecting any current or design coordinate."
+            ),
             tools=[ListProjects(), RegisterProject(), InspectProjectState()],
         )
 
@@ -1134,9 +1151,12 @@ class Distribution(Role):
     def __init__(self) -> None:
         super().__init__(
             name="distribution",
-            description="Install and verify official native Understand Anything Skills where the Agent can access code.",
+            description=(
+                "Explicit-only CoIntent/UA installation and verification for the Agent environment that can access code."
+            ),
             instructions=(
-                "Use only when UA is missing, incompatible, or the user asks to install it. Detect the real Agent "
+                f"{EXPLICIT_UA_ACTIVATION} Use only after activation and when UA is missing, incompatible, or the user "
+                "asks to install it. Detect the real Agent "
                 "platform and OS, obtain the native plan, ask the Agent host to execute those official commands, "
                 "then measure and submit post-install evidence. Never claim server-side execution, embed UA as a "
                 "CoIntent Skill, or proceed while verification says incompatible or reload required."
@@ -1148,9 +1168,11 @@ class Distribution(Role):
 class UnderstandCurrent(Role):
     def __init__(self) -> None:
         super().__init__(
-            name="understand-current", description="Refresh and read code-derived current truth on demand.",
+            name="understand-current",
+            description="Explicit-only CoIntent/UA refresh and bounded reading of code-derived current truth.",
             instructions=(
-                "Current truth is code → pinned Understand Anything → validated projection. Never accept graph "
+                f"{EXPLICIT_UA_ACTIVATION} Current truth is code → pinned Understand Anything → validated "
+                "projection. Never accept graph "
                 "content or turn conversation into an observed write. Return only one page-equivalent level."
             ),
             skills=[LearnCurrentSystem()],
@@ -1164,9 +1186,11 @@ class UnderstandCurrent(Role):
 class DesignFuture(Role):
     def __init__(self) -> None:
         super().__init__(
-            name="design-future", description="Design and review a separate target structure before code.",
+            name="design-future",
+            description="Explicit-only CoIntent/UA design and review of a separate target structure before code.",
             instructions=(
-                "Use only after explicit design intent. Refresh first and never rebase silently. Target drawings "
+                f"{EXPLICIT_UA_ACTIVATION} Use only after activation and explicit design intent. Refresh first and "
+                "never rebase silently. Target drawings "
                 "are independent history and never become observed truth. Finalization schedules no scan."
             ),
             skills=[DesignStructureFirst()],
@@ -1181,9 +1205,13 @@ class CoIntent(Role):
     def __init__(self) -> None:
         super().__init__(
             name="cointent",
-            description="Understand current code truth on demand and design a separate future structure on demand.",
+            description=(
+                "Explicit-only CoIntent/UA workflow for current-code understanding and separate future-structure design."
+            ),
             instructions=(
-                "Inspect project state first. Route what exists to understand-current. Enter design-future only "
+                f"{EXPLICIT_UA_ACTIVATION} If activation is absent, do not inspect project state and do not invoke "
+                "any child Role, Skill, or Tool. After activation, inspect project state first. Route what exists to "
+                "understand-current. Enter design-future only "
                 "after explicit design intent and refresh before a new drawing. Read one semantic page per call. "
                 "Never translate conversation or target design into an observed write. Stop after implementation "
                 "context and compare a historical design with later reality only when requested."
